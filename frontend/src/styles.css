@@ -527,3 +527,10 @@ h1,.panel h2,.provenance h2{font-family:var(--font-display);letter-spacing:-.035
   font-family:var(--font-number);
   font-variant-numeric:tabular-nums lining-nums;
 }
+/* Product clarity and reliable sidebar section alignment. */
+.evaluation-summary{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:17px 0 8px;padding:0 2px 2px}
+.evaluation-summary h2{font:600 15px Manrope,sans-serif;letter-spacing:-.025em;color:#e5ecee;margin:6px 0 3px}
+.evaluation-summary p{font-size:10px;line-height:1.55;color:#82949e;margin:0}
+.summary-period{flex-shrink:0;font:9px 'DM Mono',monospace;letter-spacing:.08em;color:#8eaaa1;padding-bottom:2px}
+.context-facts dd small{display:block;margin-top:4px;font:9px 'DM Mono',monospace;color:#788c96;letter-spacing:0}
+@media(max-width:620px){.evaluation-summary{align-items:flex-start;flex-direction:column;gap:7px;margin-top:13px}.summary-period{font-size:8px}}

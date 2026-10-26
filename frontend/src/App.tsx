@@ -52,6 +52,13 @@ const fmtTime = (value: string | null | undefined) => value ? new Date(value).to
 const shortTime = (value: string) => new Date(value).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' })
 const errorTone = (v: number | null) => v == null ? 'neutral' : v > 0 ? 'warm' : 'cool'
 
+const scrollToSection = (id: string, offset = 70) => {
+  const target = document.getElementById(id)
+  if (!target) return
+  const top = target.getBoundingClientRect().top + window.scrollY - offset
+  window.scrollTo({ top, behavior: 'smooth' })
+}
+
 function App() {
   const [cutoff, setCutoff] = useState('09:00')
   const [selectedDate, setSelectedDate] = useState('2026-01-14')
@@ -146,9 +153,9 @@ function App() {
       <div className="workspace-pill"><span className="live-dot"/><span>GB POWER DESK</span><ChevronDown size={13}/></div>
       <div className="nav-label">WORKSPACE</div>
       <nav className="main-nav">
-        <button aria-label="Overview" className={`nav-link ${activeNav === 'Overview' ? 'active' : ''}`} onClick={() => setActiveNav('Overview')}><Activity size={17}/><span>Overview</span><span className="nav-index">01</span></button>
-        <button aria-label="Forecast accuracy" className={`nav-link ${activeNav === 'Forecast accuracy' ? 'active' : ''}`} onClick={() => {setActiveNav('Forecast accuracy'); document.getElementById('accuracy-panel')?.scrollIntoView({behavior:'smooth',block:'start'})}}><Gauge size={17}/><span>Forecast accuracy</span></button>
-        <button aria-label="Hourly intervals" className={`nav-link ${activeNav === 'Hourly intervals' ? 'active' : ''}`} onClick={() => {setActiveNav('Hourly intervals'); document.getElementById('period-table')?.scrollIntoView({behavior:'smooth',block:'start'})}}><CalendarDays size={17}/><span>Hourly intervals</span></button>
+        <button aria-label="Overview" className={`nav-link ${activeNav === 'Overview' ? 'active' : ''}`} onClick={() => {setActiveNav('Overview'); scrollToSection('forecast-workspace', 70)}}><Activity size={17}/><span>Overview</span><span className="nav-index">01</span></button>
+        <button aria-label="Forecast accuracy" className={`nav-link ${activeNav === 'Forecast accuracy' ? 'active' : ''}`} onClick={() => {setActiveNav('Forecast accuracy'); scrollToSection('accuracy-panel', 70)}}><Gauge size={17}/><span>Forecast accuracy</span></button>
+        <button aria-label="Hourly intervals" className={`nav-link ${activeNav === 'Hourly intervals' ? 'active' : ''}`} onClick={() => {setActiveNav('Hourly intervals'); scrollToSection('period-table', 70)}}><CalendarDays size={17}/><span>Hourly intervals</span></button>
       </nav>
       <div className="sidebar-divider"/>
       <div className="nav-label">DATA & CONTROLS</div>
@@ -167,7 +174,7 @@ function App() {
       </header>
 
       <div className="page-wrap">
-        <section className="forecast-workspace" aria-label="Wind forecast workspace">
+        <section className="forecast-workspace" id="forecast-workspace" aria-label="Wind forecast workspace">
         <section className="hero-row workspace-heading">
           <div className="hero-main">
             <div className="eyebrow">Forecast workspace <span className="eyebrow-sep">·</span> UK national wind</div>
@@ -179,7 +186,7 @@ function App() {
             <div><dt>Decision date</dt><dd>{selectedDay ? fmtDate(selectedDay.decisionDate, false) : '—'}</dd></div>
             <div><dt>Delivery date</dt><dd>{selectedDay ? fmtDate(selectedDay.deliveryDate, false) : '—'}</dd></div>
             <div><dt>UK cut-off</dt><dd>{cutoff}</dd></div>
-            <div><dt>Selected vintage</dt><dd>{selectedDay?.latestPublishTime ? fmtTime(selectedDay.latestPublishTime) : '—'}</dd></div>
+            <div><dt>Latest selected publication</dt><dd>{selectedDay?.latestPublishTime ? fmtTime(selectedDay.latestPublishTime) : '—'}<small>Latest across per-hour selections</small></dd></div>
           </dl>
         </section>
 
@@ -189,7 +196,7 @@ function App() {
         {error && <div className="error-banner"><AlertTriangle size={17}/><div><strong>Could not load analysis</strong><span>{error}</span></div><button onClick={refreshData}>Try again</button></div>}
 
         <section className="control-strip">
-          <div className="control-intro"><div className="control-glyph"><Clock3 size={17}/></div><div><strong>Decision context</strong><span>Choose the latest forecast available at decision time</span></div></div>
+          <div className="control-intro"><div className="control-glyph"><Clock3 size={17}/></div><div><strong>Decision context</strong><span>For each delivery hour, use the latest publication at or before this cut-off on the decision date</span></div></div>
           <div className="control-field"><label htmlFor="cutoff">Decision cut-off <span>UK TIME</span></label><div className="select-wrap"><select id="cutoff" value={cutoff} onChange={e => setCutoff(e.target.value)}>{CUTOFFS.map(t => <option key={t} value={t}>{t}</option>)}</select><ChevronDown size={14}/></div></div>
           <div className="control-field delivery-field"><label htmlFor="decision-date">Decision date <span>DELIVERY D+1</span></label><div className="select-wrap"><select id="decision-date" value={selectedDay?.decisionDate || selectedDate} onChange={e => setSelectedDate(e.target.value)} disabled={!data}>{(data?.daily || []).map(d => <option key={d.decisionDate} value={d.decisionDate}>{fmtDate(d.decisionDate, false)} → {fmtDate(d.deliveryDate, false)}</option>)}</select><ChevronDown size={14}/></div></div>
           <label className="demo-mode-toggle" title="Use only synthetic records for an offline UI walkthrough"><input type="checkbox" checked={demoMode} onChange={e => { setDemoMode(e.target.checked); if (!e.target.checked) { forceRefreshRef.current = true; setRefreshToken(v => v + 1) } }} /><span>Demo fixture</span></label><button className="refresh-button" onClick={refreshData} disabled={loading || refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/><span>{refreshing ? 'Refreshing' : 'Refresh data'}</span></button>
@@ -202,7 +209,9 @@ function App() {
           <div><span>ACTUALS IN SOURCE WINDOW</span><strong>{data ? `${fmtNum(data.meta.sourceActualHalfHourlyPeriods)} / ${fmtNum(data.meta.expectedSourceActualHalfHourlyPeriods)} half-hours` : 'Awaiting data'}</strong></div>
         </div>
 
-        <section className="metric-grid" aria-label="Forecast accuracy summary">
+        <section className="evaluation-summary" aria-labelledby="evaluation-summary-title"><div><div className="panel-kicker">MONTH-WIDE PERFORMANCE</div><h2 id="evaluation-summary-title">January evaluation summary</h2><p>Metrics below aggregate matched hourly intervals across the January decision window. The selected-day chart and ledger follow separately.</p></div><span className="summary-period">01–31 JAN 2026</span></section>
+
+        <section className="metric-grid" aria-label="January 2026 evaluation summary">
           <article className="metric-card metric-primary"><div className="metric-top"><span>Mean absolute error</span><span className="metric-symbol"><Activity size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.maeMW)} <small>MW</small></div><div className="metric-foot"><span className="metric-dot green-dot"/> Typical miss per hourly interval</div><div className="metric-accent-line"/></article>
           <article className="metric-card"><div className="metric-top"><span>Weighted absolute error</span><span className="metric-symbol"><Gauge size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.wapePct, 2)}<small>%</small></div><div className="metric-foot">Absolute errors ÷ total actual wind</div></article>
           <article className="metric-card"><div className="metric-top"><span>Forecast bias</span><span className={'bias-icon ' + errorTone(metrics?.biasMW ?? null)}>{metrics?.biasMW == null ? <Activity size={16}/> : metrics.biasMW >= 0 ? <ArrowUpRight size={16}/> : <ArrowDownRight size={16}/>}</span></div><div className={'metric-value ' + errorTone(metrics?.biasMW ?? null)}>{loading ? '—' : fmtNum(metrics?.biasMW)} <small>MW</small></div><div className="metric-foot">{loading ? 'Waiting for matched hours' : metrics?.biasMW == null ? 'No matched bias estimate available' : metrics.biasMW > 0 ? 'Over-forecast on average' : metrics.biasMW < 0 ? 'Under-forecast on average' : 'No average signed bias'}</div></article>
