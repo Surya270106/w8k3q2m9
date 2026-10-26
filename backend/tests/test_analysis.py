@@ -1,0 +1,382 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main as api
+
+UTC = timezone.utc
+
+
+def row(decision_day: date, actual: float, forecast: float, period: int = 1) -> dict:
+    delivery_day = decision_day + timedelta(days=1)
+    start = datetime.combine(delivery_day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=period - 1)
+    error = forecast - actual
+    return {
+        "startTime": api.iso_utc(start),
+        "decisionDate": decision_day.isoformat(),
+        "deliveryDate": delivery_day.isoformat(),
+        "intervalIndex": period,
+        "resolutionMinutes": 60,
+        "actualMW": actual,
+        "forecastMW": forecast,
+        "errorMW": error,
+        "actualMinusForecastMW": -error,
+        "absoluteErrorMW": abs(error),
+        "shortfallMW": max(0.0, error),
+        "percentageError": error / actual * 100 if actual >= 100 else None,
+        "publishTime": api.iso_utc(start - timedelta(hours=18)),
+        "decisionCutoff": f"{decision_day.isoformat()}T09:00+00:00",
+        "forecastLeadHours": 18.0,
+        "decisionLeadHours": 18.5,
+        "intervalLowMW": None,
+        "intervalHighMW": None,
+    }
+
+
+def make_calibration_rows() -> list[dict]:
+    records = []
+    # At least five fully completed delivery days before Jan 1.
+    for offset in range(14, 0, -1):
+        decision_day = date(2026, 1, 1) - timedelta(days=offset)
+        for period in range(1, 25):
+            records.append(row(decision_day, actual=1000.0, forecast=1000.0, period=period))
+    # Current evaluation delivery (Jan 2) is deliberately a dramatic miss. It must not calibrate itself.
+    for period in range(1, 25):
+        records.append(row(date(2026, 1, 1), actual=0.0, forecast=10_000.0, period=period))
+    return records
+
+
+def test_cutoff_validation_rejects_invalid_times():
+    assert api.parse_cutoff("09:00") == (9, 0)
+    assert api.parse_cutoff("23:59") == (23, 59)
+    with pytest.raises(Exception):
+        api.parse_cutoff("24:00")
+    with pytest.raises(Exception):
+        api.parse_cutoff("9am")
+
+
+def test_scope_only_allows_january_2026_decision_dates():
+    assert api.month_window("2026-01") == (date(2026, 1, 1), date(2026, 2, 1))
+    with pytest.raises(Exception):
+        api.month_window("2026-02")
+
+
+def test_actual_normalization_keeps_wind_only():
+    records = [
+        {"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 120},
+        {"startTime": "2026-01-02T00:00:00Z", "fuelType": "CCGT", "generation": 999},
+    ]
+    result = api.normalize_actuals(records, datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert result["2026-01-02T00:00:00Z"] == 120
+
+
+def test_actual_normalization_uses_latest_revision_when_publish_times_exist():
+    records = [
+        {"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 100, "publishTime": "2026-01-02T00:35:00Z"},
+        {"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 108, "publishTime": "2026-01-02T01:10:00Z"},
+    ]
+    result = api.normalize_actuals(records, datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert result["2026-01-02T00:00:00Z"] == 108
+
+
+def test_fuelhh_settlement_date_and_period_validate_start_time():
+    records = [
+        {"startTime": "2026-01-02T12:00:00Z", "settlementDate": "2026-01-02", "settlementPeriod": 25, "fuelType": "WIND", "generation": 100},
+        {"startTime": "2026-01-02T12:30:00Z", "settlementDate": "2026-01-02", "settlementPeriod": 26, "fuelType": "WIND", "generation": 120},
+        {"startTime": "2026-01-02T13:00:00Z", "settlementDate": "2026-01-02", "settlementPeriod": 26, "fuelType": "WIND", "generation": 999},
+    ]
+    result = api.normalize_actuals(records, datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert result == {"2026-01-02T12:00:00Z": 100, "2026-01-02T12:30:00Z": 120}
+
+
+def test_hourly_actual_normalization_averages_1200_and_1230_only_as_a_pair():
+    records = [
+        {"startTime": "2026-01-02T12:00:00Z", "settlementDate": "2026-01-02", "settlementPeriod": 25, "fuelType": "WIND", "generation": 100},
+        {"startTime": "2026-01-02T12:30:00Z", "settlementDate": "2026-01-02", "settlementPeriod": 26, "fuelType": "WIND", "generation": 120},
+        {"startTime": "2026-01-02T13:00:00Z", "settlementDate": "2026-01-02", "settlementPeriod": 27, "fuelType": "WIND", "generation": 180},
+    ]
+    actuals = api.normalize_hourly_actuals(records, datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert actuals["2026-01-02T12:00:00Z"] == 110
+    assert "2026-01-02T13:00:00Z" not in actuals  # no 13:30 input; do not copy/fill
+
+
+def test_hourly_actual_normalization_converts_offsets_before_grouping():
+    records = [
+        {"startTime": "2026-01-02T13:00:00+01:00", "fuelType": "WIND", "generation": 100},
+        {"startTime": "2026-01-02T13:30:00+01:00", "fuelType": "WIND", "generation": 120},
+    ]
+    actuals = api.normalize_hourly_actuals(records, datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert actuals == {"2026-01-02T12:00:00Z": 110}
+
+
+def test_forecast_normalization_deduplicates_same_vintage():
+    raw = [
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T08:30:00Z", "generation": 80},
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T08:30:00Z", "generation": 81},
+    ]
+    normalized = api.normalize_forecasts(raw, datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert len(normalized) == 1
+    assert normalized[0]["generation"] == 80
+
+
+def test_conflicting_duplicate_vintage_is_independent_of_input_order():
+    raw = [
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T08:30:00Z", "generation": 80},
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T08:30:00Z", "generation": 81},
+    ]
+    bounds = (datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    forward = api.normalize_forecasts(raw, *bounds)
+    reverse = api.normalize_forecasts(list(reversed(raw)), *bounds)
+    assert forward == reverse
+
+
+def test_decision_alignment_selects_latest_vintage_at_or_before_cutoff():
+    actuals = [
+        {"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 100},
+        {"startTime": "2026-01-02T00:30:00Z", "fuelType": "WIND", "generation": 120},
+    ]
+    forecasts = [
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T08:30:00Z", "generation": 110},
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T10:00:00+01:00", "generation": 120},
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T09:01:00Z", "generation": 999},
+        {"startTime": "2026-01-02T00:30:00Z", "publishTime": "2026-01-02T12:00:00Z", "generation": 777},
+    ]
+    rows = api.build_decision_rows(actuals, forecasts, date(2026, 1, 1), date(2026, 1, 2), "09:00")
+    selected = next(item for item in rows if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 1)
+    assert selected["deliveryDate"] == "2026-01-02"
+    assert selected["actualMW"] == 110
+    assert selected["forecastMW"] == 120
+    assert selected["publishTime"] == "2026-01-01T09:00:00Z"
+    assert selected["errorMW"] == 10
+    assert len([item for item in rows if item["decisionDate"] == "2026-01-01"]) == 24
+
+
+def test_decision_cutoff_change_changes_selected_vintage():
+    actuals = [
+        {"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 100},
+        {"startTime": "2026-01-02T00:30:00Z", "fuelType": "WIND", "generation": 100},
+    ]
+    forecasts = [
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T08:30:00Z", "generation": 110},
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T10:30:00Z", "generation": 130},
+    ]
+    early = api.build_decision_rows(actuals, forecasts, date(2026, 1, 1), date(2026, 1, 2), "09:00")
+    late = api.build_decision_rows(actuals, forecasts, date(2026, 1, 1), date(2026, 1, 2), "11:00")
+    early_row = next(item for item in early if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 1)
+    late_row = next(item for item in late if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 1)
+    assert early_row["forecastMW"] == 110
+    assert late_row["forecastMW"] == 130
+
+
+def test_missing_half_hour_pair_remains_missing_in_hourly_expected_denominator():
+    midnight = datetime(2026, 1, 2, tzinfo=UTC)
+    actuals = [
+        {"startTime": api.iso_utc(midnight + timedelta(minutes=30 * i)), "fuelType": "WIND", "generation": 100}
+        for i in range(48) if i != 25
+    ]
+    forecasts = [
+        {"startTime": api.iso_utc(midnight + timedelta(hours=i)), "publishTime": "2026-01-01T09:00:00Z", "generation": 110}
+        for i in range(24)
+    ]
+    rows = api.build_decision_rows(actuals, forecasts, date(2026, 1, 1), date(2026, 1, 2), "09:00")
+    hour = next(item for item in rows if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 13)
+    assert hour["forecastMW"] == 110
+    assert hour["actualMW"] is None
+    metrics = api.metric_block([row for row in rows if row["decisionDate"] == "2026-01-01"])
+    assert metrics["expectedPeriods"] == 24
+    assert metrics["matchedPeriods"] == 23
+    assert metrics["missingActualPeriods"] == 1
+
+
+def test_expected_periods_include_missing_records_in_denominator():
+    rows = [
+        {"actualMW": 100.0, "forecastMW": 110.0, "errorMW": 10.0},
+        {"actualMW": 100.0, "forecastMW": None, "errorMW": None},
+        {"actualMW": None, "forecastMW": 100.0, "errorMW": None},
+        {"actualMW": 100.0, "forecastMW": 100.0, "errorMW": 0.0},
+    ]
+    metrics = api.metric_block(rows)
+    assert metrics["expectedPeriods"] == 4
+    assert metrics["matchedPeriods"] == 2
+    assert metrics["coveragePct"] == 50.0
+
+
+def test_metrics_use_forecast_minus_actual_sign_convention():
+    rows = [
+        {"actualMW": 100.0, "forecastMW": 120.0, "errorMW": 20.0},
+        {"actualMW": 200.0, "forecastMW": 180.0, "errorMW": -20.0},
+    ]
+    metrics = api.metric_block(rows)
+    assert metrics["maeMW"] == 20
+    assert metrics["biasMW"] == 0
+    assert metrics["wapePct"] == pytest.approx(40 / 300 * 100, abs=0.001)
+    assert metrics["overforecastPct"] == 50
+
+
+def test_p90_overforecast_is_not_p90_absolute_error():
+    rows = [
+        {"actualMW": 100.0, "forecastMW": 90.0, "errorMW": -10.0},
+        {"actualMW": 100.0, "forecastMW": 90.0, "errorMW": -10.0},
+        {"actualMW": 100.0, "forecastMW": 130.0, "errorMW": 30.0},
+        {"actualMW": 100.0, "forecastMW": 120.0, "errorMW": 20.0},
+        {"actualMW": 100.0, "forecastMW": 100.0, "errorMW": 0.0},
+    ]
+    metrics = api.metric_block(rows)
+    assert metrics["p90AbsErrorMW"] >= metrics["p90OverforecastMW"]
+    assert metrics["p90OverforecastMW"] == pytest.approx(26.0)
+
+
+def test_rolling_calibration_excludes_current_delivery_day():
+    rows = make_calibration_rows()
+    daily, _ = api.add_walk_forward_calibration(rows, date(2026, 1, 1), date(2026, 1, 2))
+    jan1 = daily[0]
+    assert jan1["calibrationReady"] is True
+    assert jan1["calibrationWindowEndExclusive"] == "2026-01-01"
+    assert jan1["intervalLowResidualMW"] == 0
+    assert jan1["intervalHighResidualMW"] == 0
+    assert jan1["marginP90OverforecastMW"] == 0
+    assert jan1["intervalCoveragePct"] == 0  # today's 10 GW miss did not widen today's own band
+
+
+def test_calibration_requires_minimum_history():
+    rows = []
+    for period in range(1, 25):
+        rows.append(row(date(2026, 1, 1), actual=100, forecast=100, period=period))
+    daily, _ = api.add_walk_forward_calibration(rows, date(2026, 1, 1), date(2026, 1, 2))
+    assert daily[0]["calibrationReady"] is False
+    assert daily[0]["marginP90OverforecastMW"] is None
+
+
+def test_partial_delivery_days_do_not_count_as_complete_calibration_days():
+    records = []
+    delivery_days = [date(2025, 12, 18) + timedelta(days=i) for i in range(6)]
+    for index, delivery_day in enumerate(delivery_days):
+        decision_day = delivery_day - timedelta(days=1)
+        period_count = 24 if index < 4 else 23
+        for period in range(1, period_count + 1):
+            records.append(row(decision_day, actual=1000, forecast=1010, period=period))
+    daily, _ = api.add_walk_forward_calibration(records, date(2026, 1, 1), date(2026, 1, 2))
+    assert daily[0]["calibrationDays"] == 4
+    assert daily[0]["calibrationMatchedPeriods"] == 4 * 24
+    assert daily[0]["calibrationReady"] is False
+
+
+def test_january_evaluation_rows_are_january_decisions_and_next_day_deliveries():
+    actuals, forecasts = api.demo_data(date(2025, 12, 17), date(2026, 2, 1))
+    result = api.analysis_payload(actuals, forecasts, "demo", [], None, "09:00")
+    assert len(result["daily"]) == 31
+    assert result["daily"][0]["decisionDate"] == "2026-01-01"
+    assert result["daily"][0]["deliveryDate"] == "2026-01-02"
+    assert result["daily"][-1]["decisionDate"] == "2026-01-31"
+    assert result["daily"][-1]["deliveryDate"] == "2026-02-01"
+    assert result["metrics"]["expectedPeriods"] == 31 * 24
+    assert all(row["decisionDate"] >= "2026-01-01" for row in result["rows"])
+    assert result["meta"]["warmupDecisionDays"] == api.WARMUP_DAYS + 1
+    assert len(result["horizon"]) == 8
+    assert sum(item["count"] for item in result["histogram"]) == result["metrics"]["matchedPeriods"]
+
+
+
+def test_snapshot_cache_round_trip_is_atomic_and_versioned(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "DATA_DIR", tmp_path)
+    actuals = [{"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 123}]
+    forecasts = [{"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T09:00:00Z", "generation": 130}]
+    fetched = datetime(2026, 1, 2, 1, 0, tzinfo=UTC)
+    api._write_disk_cache(actuals, forecasts, fetched)
+    snapshot = tmp_path / "elexon_snapshot.json"
+    assert snapshot.exists()
+    assert not (tmp_path / "elexon_snapshot.json.tmp").exists()
+    actual_read, forecast_read, fetched_read = api._read_disk_cache()
+    assert actual_read == actuals
+    assert forecast_read == forecasts
+    assert fetched_read == fetched
+
+
+def test_analysis_hash_is_invariant_to_source_record_order():
+    actuals, forecasts = api.demo_data(date(2025, 12, 17), date(2026, 2, 1))
+    first = api.analysis_payload(actuals, forecasts, "demo", [], None, "09:00")
+    second = api.analysis_payload(list(reversed(actuals)), list(reversed(forecasts)), "demo", [], None, "09:00")
+    assert first["meta"]["dataSha256"] == second["meta"]["dataSha256"]
+    assert first["meta"]["analysisRunId"] == second["meta"]["analysisRunId"]
+
+def test_demo_payload_is_explicitly_marked_and_has_reproducible_run_id():
+    actuals, forecasts = api.demo_data(date(2025, 12, 17), date(2026, 2, 1))
+    first = api.analysis_payload(actuals, forecasts, "demo", ["synthetic"], None, "09:00")
+    second = api.analysis_payload(actuals, forecasts, "demo", ["synthetic"], None, "09:00")
+    assert first["source"] == "demo"
+    assert first["status"] == "demo"
+    assert first["metrics"]["matchedPeriods"] > 700
+    assert first["meta"]["analysisRunId"] == second["meta"]["analysisRunId"]
+
+
+
+def test_actuals_fetch_uses_settlement_date_bounds_and_wind_filter(monkeypatch):
+    captured = []
+    def fake_fetch(url, params, **kwargs):
+        captured.append((url, params))
+        return []
+    monkeypatch.setattr(api, "fetch_json", fake_fetch)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 1, 2, tzinfo=UTC)
+    assert api.fetch_actuals(start, end) == []
+    assert len(captured) == 1
+    url, params = captured[0]
+    assert url.endswith("/datasets/FUELHH/stream")
+    assert params == {"settlementDateFrom": "2026-01-01", "settlementDateTo": "2026-01-01", "fuelType": "WIND"}
+
+
+def test_actual_settlement_date_chunk_ranges_are_inclusive_and_non_overlapping():
+    ranges = api._calendar_date_ranges(date(2026, 1, 1), date(2026, 1, 17), 7)
+    assert ranges == [
+        (date(2026, 1, 1), date(2026, 1, 7)),
+        (date(2026, 1, 8), date(2026, 1, 14)),
+        (date(2026, 1, 15), date(2026, 1, 16)),
+    ]
+
+
+def test_forecast_fetch_uses_publication_time_bounds(monkeypatch):
+    captured = []
+    def fake_fetch(url, params, **kwargs):
+        captured.append((url, params))
+        return []
+    monkeypatch.setattr(api, "fetch_json", fake_fetch)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 1, 2, tzinfo=UTC)
+    assert api.fetch_forecasts(start, end) == []
+    assert len(captured) == 1
+    url, params = captured[0]
+    assert url.endswith("/datasets/WINDFOR/stream")
+    assert params == {"publishDateTimeFrom": "2026-01-01T00:00:00Z", "publishDateTimeTo": "2026-01-02T00:00:00Z"}
+
+
+def test_actual_normalization_rejects_missing_fuel_type():
+    records = [{"startTime": "2026-01-02T00:00:00Z", "generation": 120}]
+    result = api.normalize_actuals(records, datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    assert result == {}
+
+def test_health_endpoint_is_available_without_upstream_network():
+    client = TestClient(api.app)
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_readiness_endpoint_does_not_claim_live_data():
+    client = TestClient(api.app)
+    response = client.get("/api/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready", "service": "winddesk"}
+
+
+def test_explicit_demo_analysis_endpoint_does_not_call_live_api(monkeypatch):
+    def fail_live(*_args, **_kwargs):
+        raise AssertionError("live fetch must not be called when demo=true")
+    monkeypatch.setattr(api, "fetch_actuals", fail_live)
+    monkeypatch.setattr(api, "fetch_forecasts", fail_live)
+    # Call the route function directly to avoid mutable global cache state from other tests.
+    response = api.analysis(month="2026-01", cutoff="09:00", refresh=False, demo=True)
+    assert response["source"] == "demo"
+    assert response["status"] == "demo"

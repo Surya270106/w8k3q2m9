@@ -1,0 +1,7 @@
+{
+  "name": "winddesk",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": ["frontend"],
+  "scripts": { "build": "npm run build --workspace frontend", "dev": "npm run dev --workspace frontend" }
+}

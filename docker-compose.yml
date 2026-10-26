@@ -1,0 +1,34 @@
+services:
+  api:
+    build:
+      context: ./backend
+    environment:
+      ELEXON_API_BASE: https://data.elexon.co.uk/bmrs/api/v1
+      ALLOW_DEMO_FALLBACK: "true"
+      CACHE_TTL_SECONDS: "900"
+      DATA_DIR: /app/data
+      CORS_ORIGINS: "*"
+    expose:
+      - "8000"
+    volumes:
+      - winddesk-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  winddesk-data:

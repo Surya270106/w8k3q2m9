@@ -1,0 +1,1 @@
+"""WindDesk FastAPI application package."""
