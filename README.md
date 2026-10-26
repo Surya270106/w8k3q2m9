@@ -1,218 +1,353 @@
-﻿# WindDesk â€” Decision-time Wind Forecast Intelligence
+# WindDesk
 
-A full-stack pilot for a UK energy utility evaluating the **national wind forecasts that would have been available at day-ahead purchase decision time**. It combines React, TypeScript, Recharts, FastAPI, and Elexon's public BMRS API.
+**A decision-time audit desk for UK day-ahead wind forecasts.** WindDesk reconstructs which Elexon wind forecast vintage was available at a selected decision cutoff, compares it with the eventual wind outturn, and exposes forecast error, uncertainty and data coverage in an auditable workflow.
 
-> **Decision support only.** This pilot measures forecast error and uncertainty. It does not calculate the utility's actual procurement requirement: demand, thermal availability, market prices, and other generation sources are intentionally out of scope.
+> **Pilot scope:** decision support and forecast evaluation only. WindDesk does not calculate the utility's total procurement requirement or recommend trades. Demand, market prices, thermal availability and portfolio data are outside the scope of this assignment.
 
-## Product scope
+<p align="left">
+  <a href="https://w8k3q2m9.vercel.app/">Live application</a> ·
+  <a href="https://w8k3q2m9.onrender.com/api/health">Backend health</a> ·
+  <a href="https://github.com/Surya270106/w8k3q2m9">Source repository</a>
+</p>
 
-- **January 2026 purchase decision dates:** 1â€“31 January 2026.
-- **Delivery dates evaluated:** 2 Januaryâ€“1 February 2026 (the day after each decision date).
-- **Actuals:** Elexon `FUELHH` filtered to `fuelType=WIND`, aligned by `startTime`.
-- **Forecasts:** Elexon `WINDFOR`, preserving `publishTime` and `startTime` for vintage selection.
-- **Default decision cutoff:** 09:00 Europe/London on Dâˆ’1. This is a configurable assignment assumption, not a claim about a market gate-closure deadline.
-- **Source resolution:** FUELHH actuals are 30-minute MW values; WINDFOR stream targets are hourly.
-- **Evaluation resolution:** 60 minutes; each hourly FUELHH actual is the mean of both constituent half-hour MW values. A missing half-hour makes that hourly actual unavailable. January has 31 × 24 = **744 expected hourly evaluation intervals** (and 1,488 underlying FUELHH half-hours).
+## Project status
 
-The live feed must be checked in the deployed environment. If it is unavailable, the app clearly identifies deterministic synthetic data instead of implying that those values came from Elexon.
+| Area | Status |
+|---|---|
+| Public source | [GitHub repository](https://github.com/Surya270106/w8k3q2m9) |
+| Frontend | [Vercel deployment](https://w8k3q2m9.vercel.app/) |
+| Backend | [Render service](https://w8k3q2m9.onrender.com/) |
+| Previously reported backend verification | 53 tests passed, 0 failed, 0 skipped; one upstream Starlette/AnyIO deprecation warning |
+| Frontend verification | TypeScript check and Vite production build passed in the reported local run |
+| Previously verified Elexon sample | 744/744 hourly intervals matched; 1,488/1,488 source half-hour readings; live source reported in the local integration run on 26 October 2026 |
+| Docker runtime | Dockerfiles and Compose configuration are included; container execution has not been verified in the available environment |
+| Full browser QA | Core navigation, decision controls, demo toggle, refresh, daily chart selections and methodology panel were exercised manually. CSV contents, keyboard accessibility, responsive layouts and all error states have not been fully verified. |
+| Submission video and form | Not completed at the time this README was prepared |
 
-## Capabilities
+The live URLs above are the intended public entry points. Live data availability can change; always inspect the source-state label in the application rather than assuming a successful page load means the latest request fetched fresh Elexon data.
 
-1. **Decision-time vintage selection.** For every hourly delivery interval, select the latest `WINDFOR` record whose `startTime` is that interval start and whose `publishTime` is at or before the selected cut-off on the preceding decision date. `publishTime` identifies forecast publication, never delivery time. Later vintages are excluded.
-2. **Forecast accuracy.** MAE, RMSE, signed bias, WAPE, MAPE (only when actual generation is at least 100 MW), P90/P95 absolute error, over-forecast frequency, error distribution, daily metrics, and hour-of-day diagnostics.
-3. **Forecast-horizon diagnostics.** MAE, RMSE and bias are grouped by the selected forecast vintage's actual lead time to delivery.
-4. **Walk-forward uncertainty calibration.** A trailing 14-day empirical residual window estimates an 80% interval and P90 *positive over-forecast* buffer. For a decision on day `d`, calibration data must have delivery dates strictly earlier than `d`; the current delivery day and future delivery dates never calibrate their own uncertainty. At least five complete delivery days are required. A day counts toward that minimum only when all 24 hourly forecast/actual pairs are present; each actual pair uses two distinct FUELHH half-hours. Partial days remain in the coverage ledger but do not qualify as complete calibration days. Conflicting duplicate records with the same target and publication timestamp use a stable canonical tie-break, so source page ordering cannot change the analysis.
-5. **Auditability.** The API returns source state, record counts, source timestamps, warnings, a data SHA-256 fingerprint, and an analysis run ID.
-6. **Data quality accounting.** All expected hourly intervals are generated before joining, so missing forecasts or missing/incomplete actual half-hour pairs reduce coverage instead of disappearing from the denominator.
-7. **CSV export.** Download the selected decision-day ledger with forecast/actual values, publication time, error, lead time, and calibrated interval.
-8. **Synthetic demo mode.** A UI toggle permits an offline walkthrough. The orange warning is not a decoration: synthetic values must not be used for operational decisions.
+## Why this project is interesting
 
-## Architecture
+The challenge is not just plotting a forecast. It is reconstructing the information set that existed when a historical decision was made, preserving forecast publication vintages, aligning datasets with different resolutions, and measuring uncertainty without allowing future outcomes to leak into earlier decisions.
 
-```text
-React + TypeScript + Recharts
-        â”‚ /api/analysis?month=2026-01&cutoff=09:00
-        â–¼
-FastAPI application
-   â”œâ”€â”€ Elexon FUELHH reader â”€â”€ settlement-date window + WIND filter
-   â”œâ”€â”€ Elexon WINDFOR reader â”€ publication-time window + retained vintages
-   â”œâ”€â”€ local JSON snapshot cache / bounded retries
-   â”œâ”€â”€ paired half-hour aggregation & expected hourly calendar
-   â”œâ”€â”€ cutoff-aware vintage selector
-   â”œâ”€â”€ walk-forward calibration + metrics
-   â””â”€â”€ provenance and diagnostics response
-        â”‚
-        â”œâ”€â”€ Docker Compose: Nginx frontend + API service
-        â””â”€â”€ Single Docker image: FastAPI serves the built React app
+WindDesk emphasizes:
+
+- **Decision-time replay:** choose a historical decision date and cutoff, then select only forecasts published by that cutoff.
+- **Resolution-aware evaluation:** compare hourly WINDFOR targets to an hourly actual formed from two distinct half-hour FUELHH WIND readings.
+- **Walk-forward calibration:** estimate empirical error ranges and a positive over-forecast buffer using only fully completed prior delivery days.
+- **Data quality as a first-class result:** show expected periods, matched periods, missing readings and source status rather than silently dropping gaps.
+- **Traceability:** retain publication timestamps, actual components, run identifiers, source status and a data fingerprint.
+
+## Product scope and assumptions
+
+- **Decision dates:** 1-31 January 2026.
+- **Delivery dates:** 2 January-1 February 2026, one day after each decision date.
+- **Default decision cutoff:** 09:00 in `Europe/London` on the decision date. This is a configurable assignment assumption, not a claim about a market gate-closure deadline.
+- **Actuals:** Elexon `FUELHH`, filtered to `fuelType == "WIND"`.
+- **Forecasts:** Elexon `WINDFOR` stream records, preserving `startTime` and `publishTime` separately.
+- **Source resolution:** WINDFOR delivery targets are hourly; FUELHH actuals are half-hourly.
+- **Evaluation resolution:** one hour. The actual for an hour is the arithmetic mean of the two distinct constituent half-hour MW values. If either half-hour is missing or invalid, the hourly actual remains missing.
+- **Expected January sample:** 31 delivery days x 24 hours = 744 hourly periods, supported by 1,488 half-hour FUELHH inputs when complete.
+- **Historical warm-up:** earlier delivery days are fetched to establish the initial calibration history. They are not included in the January headline evaluation metrics.
+
+### Decision-time forecast selection
+
+```mermaid
+flowchart TD
+    A[Choose decision date D and cutoff] --> B[Set delivery date to D plus one day]
+    B --> C[Collect WINDFOR records for each hourly delivery target]
+    C --> D[Keep records with publishTime at or before the cutoff]
+    D --> E{Eligible forecast exists?}
+    E -- Yes --> F[Select latest eligible publication for that target]
+    E -- No --> G[Mark forecast missing]
+    F --> H[Pair with two distinct FUELHH half-hours after delivery]
+    G --> I[Keep the expected hour in the coverage denominator]
+    H --> J[Calculate error and eligible diagnostics]
+    I --> J
+    J --> K[Return decision ledger and provenance]
 ```
 
-### Important analysis choices
+`startTime` identifies the delivery target. `publishTime` identifies the forecast vintage. A forecast published after the selected cutoff must never be selected for that decision.
 
-- Error is defined as **forecast âˆ’ actual**. Positive bias means the forecast overestimated wind; this can indicate wind-shortfall risk.
-- WAPE is `sum(abs(forecast âˆ’ actual)) / sum(actual)`. MAPE is presented only for periods with actual generation â‰¥ 100 MW to avoid unstable near-zero denominators.
-- P90 absolute error is a retrospective magnitude statistic. The decision panel's P90 buffer is different: it is the P90 of `max(forecast âˆ’ actual, 0)` from completed prior delivery days only. It is a risk indicator, **not** a thermal procurement recommendation.
-- The nominal 80% interval is empirical, not a guarantee. Its realized coverage is reported in a prequential/walk-forward diagnostic and can differ from 80%. Calibration is pooled across the trailing window rather than conditioned by hour of day or lead-time bucket; the horizon panel is diagnostic, not a conditional probabilistic model. Vintage selection is per hourly target, so if the source has holes the selected delivery day may contain more than one publication vintage. The ledger exposes every selected `publishTime` so the reviewer can inspect this explicitly.
-- The warm-up window before January is used only to establish an initial historical calibration sample; it is excluded from January headline metrics.
+### End-to-end architecture
 
-## Start locally
-
-### Option A â€” Docker Compose (recommended)
-
-Requirements: Docker Desktop / Docker Engine with Compose.
-
-```powershell
-docker compose up --build
+```mermaid
+flowchart LR
+    U[Analyst] --> UI[React and TypeScript dashboard]
+    UI -->|GET /api/analysis| V[Vercel API rewrite]
+    V --> API[FastAPI backend on Render]
+    API --> F[FUELHH reader]
+    API --> W[WINDFOR reader]
+    F --> N[Normalize and validate timestamps and values]
+    W --> N
+    N --> C[Cache snapshot and source provenance]
+    C --> A[Hourly alignment and forecast-vintage selection]
+    A --> M[Metrics and walk-forward calibration]
+    M --> R[Validated analysis response]
+    R --> UI
+    R --> X[CSV decision ledger]
+    E[Elexon BMRS API] --> F
+    E --> W
 ```
 
-Open the UI at **http://localhost:8080**. The API is available internally to Compose; the health endpoint is proxied at `http://localhost:8080/api/health` and the OpenAPI docs are available on the API container at port 8000 if exposed for local debugging.
+### Deployment topology
 
-### Option B â€” Single container
+The current public setup uses Vercel for the frontend and Render for the Python API. The Vercel rewrite forwards `/api/*` requests to the Render service so the browser can use same-origin API paths.
 
-```powershell
-docker build -t winddesk .
-docker run --rm -p 8000:8000 -e ALLOW_DEMO_FALLBACK=true winddesk
+```mermaid
+flowchart TD
+    B[Browser] --> V[Vercel React static site]
+    V -->|/api/* rewrite| R[Render FastAPI service]
+    R --> E[Elexon BMRS API]
 ```
 
-Open **http://localhost:8000** (API docs: `/docs`). This is also the single-container deployment topology used by the included Heroku Docker configuration.
+The repository also includes two Docker deployment options. They are alternatives to the hosted split topology, not the same deployment:
 
-### Option C â€” Local development without Docker
-
-Terminal 1 (backend):
-
-```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+```mermaid
+flowchart LR
+    subgraph Compose[Docker Compose option]
+      N[Nginx frontend on port 8080] --> S[FastAPI API service on port 8000]
+      S --> D[Named winddesk-data volume]
+    end
+    subgraph Single[Single-container option]
+      B[Root Dockerfile builds React assets] --> F[FastAPI serves assets and API]
+    end
 ```
 
-Terminal 2 (frontend):
+Docker configuration is included, but a Docker image build and container runtime test have not been verified in the available environment.
 
-```powershell
-cd frontend
-npm ci
-npm run dev
-```
+## Features
 
-Open **http://localhost:5173**. Vite proxies `/api` to `http://127.0.0.1:8000` by default.
+- Historical forecast-vintage selection at a configurable decision cutoff.
+- Forecast-versus-actual time-series view for a selected delivery day.
+- MAE, RMSE, signed bias, WAPE, MAPE eligibility, P90/P95 absolute error and over-forecast frequency.
+- Daily error diagnostics, hour-of-day diagnostics, forecast-lead-time diagnostics and signed-error distribution.
+- Empirical walk-forward uncertainty interval and positive over-forecast buffer, with calibration sample size and sufficiency warning.
+- Coverage accounting for expected hours, forecast availability, paired actual availability and underlying half-hour inputs.
+- Hourly decision ledger that includes each half-hour actual, the hourly mean, selected publication time, forecast lead and error.
+- CSV export, source status, warnings, run ID and reproducible data fingerprint.
+- Explicit live, cached/stale and synthetic demo states. Synthetic data is for a walkthrough only and must not be interpreted as Elexon observations.
 
-## Tests and quality checks
+## Metrics and calibration
 
-From the repository root:
+Let `forecast` be the selected forecast and `actual` the matched hourly mean of the two half-hour FUELHH readings. The error convention is:
 
-```powershell
-python -m pip install -r requirements.txt pytest
-pytest -q
-npm ci
-npm run build
-```
+`error = forecast - actual`
 
-The tests cover cutoff validation, January date semantics, wind-only filtering, duplicate handling and order independence, exact-cutoff eligibility, post-cutoff exclusion, cutoff sensitivity, missing-period denominators, metric sign conventions, positive over-forecast risk, complete-day calibration minimums, rolling-calibration look-ahead protection, reproducible demo output, and health/readiness endpoints.
+Therefore positive bias indicates that wind was over-forecast on average.
 
-The GitHub Actions workflow runs the backend tests and a frontend TypeScript/Vite production build on pushes and pull requests.
+| Metric | Meaning |
+|---|---|
+| MAE | Mean absolute forecast error, in MW |
+| RMSE | Square root of mean squared error, in MW; penalizes larger misses more strongly |
+| Bias | Mean signed error, in MW |
+| WAPE | Sum of absolute errors divided by sum of actual generation |
+| MAPE | Mean absolute percentage error, included only for periods where actual generation is at least 100 MW |
+| P90/P95 absolute error | Retrospective 90th/95th percentile of absolute errors |
+| P90 positive over-forecast buffer | P90 quantile of `max(forecast - actual, 0)` using eligible prior calibration errors |
+| Interval coverage | Share of evaluation outcomes inside the empirical interval; realized coverage can differ from its nominal level |
 
-## API and configuration
+### Leakage controls
 
-- `GET /api/health` is a liveness check and does not claim that Elexon is reachable.
-- `GET /api/ready` reports whether the service and local application configuration are ready.
-- `GET /api/meta` returns the evaluation scope and source metadata.
-- `GET /api/analysis?month=2026-01&cutoff=09:00&refresh=false&demo=false` returns the validated analysis payload. Set `demo=true` only for an explicitly synthetic walkthrough.
-- `GET /docs` serves the FastAPI OpenAPI interface.
+For a decision on day `D`, calibration may use only errors from fully completed delivery days strictly earlier than `D`. The current delivery day's outcomes and future delivery days cannot calibrate that decision. The implementation uses a trailing calibration window and requires a minimum number of complete days; an incomplete day does not count toward that minimum.
 
-Runtime settings include `DATA_DIR`, `CACHE_TTL_SECONDS`, `CALIBRATION_WARMUP_DAYS`, `CALIBRATION_WINDOW_DAYS`, `MIN_CALIBRATION_DAYS`, and `ALLOW_DEMO_FALLBACK`. See `.env.example` and the Live data section below.
+The signed-error interval and positive over-forecast buffer are empirical historical summaries, not guarantees. The positive over-forecast buffer is not a procurement quantity, reserve requirement or trading instruction. Total procurement also depends on demand, other generation, plant availability and market prices, which are intentionally outside this dataset scope.
 
-## Verification status
+## Data sources
 
-- Backend test suite: **29 passed** from a fresh Python 3.12 virtual environment. The `tzdata` dependency supplies the IANA database needed by `zoneinfo` on Windows and minimal images. The only reported warning was an upstream Starlette/AnyIO deprecation warning.
-- Frontend TypeScript project build (`tsc -b`) and Vite production build passed. Vite reported a 595 KB JavaScript chunk (168 KB gzip), above its default 500 KB advisory threshold.
-- Live Elexon request parameters, response schemas and raw records were checked against the official OpenAPI and endpoint responses. The official OpenAPI schema for WINDFOR stream rows has `startTime`, `publishTime`, and `generation`; it does not include settlement date/period fields. `startTime` identifies delivery; `publishTime` identifies the forecast vintage. Across January, it returned 24 distinct hourly target starts per delivery date. FUELHH returned 48 distinct half-hour targets/day, all of which agreed with `settlementDate` + `settlementPeriod`. A fresh local `/api/analysis` integration request returned HTTP 200 with source state `live`, **744/744 hourly intervals matched (100% coverage)**, 0 missing forecast hours, 0 missing hourly actuals, and 1,488/1,488 underlying January FUELHH half-hours. The actual matched values use paired half-hour means. Incomplete pairs remain missing. Representative raw records and interval counts are saved under `docs/evidence/`.
-- Docker is not installed/available in the current shell, so image build and Compose startup remain unverified.
-- The connected GitHub account's repository lookup returned 404 and an owner-scoped search returned no `w8k3q2m9`; the name appears available, but GitHub creation remains the authoritative check. No repository was created or pushed. Publication is pending explicit confirmation. No deployment, recording, YouTube upload, or form submission is claimed.
+- [Elexon FUELHH stream documentation](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream) - half-hourly generation outturn by fuel type.
+- [Elexon WINDFOR stream documentation](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream) - wind generation forecasts and publication vintages.
+- [Elexon OpenAPI schema](https://data.elexon.co.uk/swagger/v1/swagger.json) - API contract reference.
+- [REint](https://reint.ai/) - product context for forecast-led energy decision tools. This project is an independent assignment pilot and is not affiliated with REint.
 
-Use `SUBMISSION_CHECKLIST.md` to close these checks in an environment with the required runtimes and account access.
-
-## Live data, cache and demo behaviour
-
-- The app fetches `FUELHH` using inclusive `settlementDateFrom` / `settlementDateTo` date filters and `fuelType=WIND`. Each chunk is bounded to seven dates and normalized against the intended UTC interval window.
-- The app fetches `WINDFOR` using `publishDateTimeFrom` / `publishDateTimeTo`, then performs the target-time alignment locally.
-- Successful raw source responses are stored under `data/` with fetch metadata and an atomic file replacement. Recent snapshots can be reused; a failed refresh may use a stale snapshot but will label it and show a warning.
-- If live fetch fails and no local snapshot exists, `ALLOW_DEMO_FALLBACK=true` allows a clearly labelled synthetic walkthrough. Set it to `false` to return an explicit API error instead.
-- To force a refresh, use the UI's **Refresh data** control. The optional **Demo fixture** toggle bypasses the live API intentionally.
-- Set `DATA_DIR`, `CACHE_TTL_SECONDS`, `CALIBRATION_WARMUP_DAYS`, `CALIBRATION_WINDOW_DAYS`, and `MIN_CALIBRATION_DAYS` through environment variables if needed.
-
-## Deployment (Heroku, Docker stack)
-
-1. Create a **public** GitHub repository with an anonymous/random repository name, as required by the assignment, and push the source.
-2. Install the Heroku CLI, sign in, and create an app name that is available:
-
-   ```powershell
-   heroku login
-   heroku create <anonymous-app-name>
-   heroku stack:set container -a <anonymous-app-name>
-   git push heroku main
-   heroku open -a <anonymous-app-name>
-   ```
-
-3. The included `heroku.yml` uses the root multi-stage `Dockerfile`; the one container serves the React build and FastAPI API on Heroku's `$PORT`.
-4. Open `/api/health` and `/docs` on the deployed host. Then open the app in an incognito window and verify source state and data warnings.
-5. A deployed service may not have persistent filesystem storage. The app uses its local cache for convenience, not as a durable database. Configure a persistent volume or external object storage before treating it as production infrastructure.
-
-A successful deployment URL is intentionally not hard-coded here: it must be created and verified in the deployer's account.
+No demand, market-price, thermal generation, or external weather datasets are used for the analysis.
 
 ## Repository layout
 
 ```text
 .
-|-- .dockerignore
-|-- .env.example
-|-- .github/workflows/ci.yml
-|-- .gitignore
+|-- .dockerignore                    # Excludes build artifacts and local files from Docker context
+|-- .env.example                     # Non-secret runtime configuration defaults
+|-- .github/workflows/ci.yml         # Backend test and frontend build workflow
+|-- .gitignore                       # Excludes local environments, dependencies and caches
+|-- Dockerfile                       # Multi-stage single-container build
+|-- docker-compose.yml               # Nginx frontend and FastAPI backend services
+|-- heroku.yml                       # Heroku container build/run configuration
+|-- vercel.json                      # Root Vercel build/output and API rewrite configuration
+|-- package.json                     # Root npm workspace and build scripts
+|-- package-lock.json                # Locked npm dependency graph
+|-- requirements.txt                 # Root Python dependencies and pytest
+|-- pytest.ini                       # Pytest configuration
+|-- README.md                        # Project overview and developer guide
+|-- SUBMISSION_CHECKLIST.md          # Release gates and current status
 |-- backend/
-|   |-- app/__init__.py
-|   |-- app/main.py
-|   |-- requirements.txt
-|   |-- Dockerfile
-|   `-- tests/test_analysis.py
+|   |-- Dockerfile                   # Standalone API container
+|   |-- requirements.txt             # Pinned API dependencies
+|   |-- app/
+|   |   |-- __init__.py              # Backend package marker
+|   |   `-- main.py                  # Elexon ingestion, normalization, analysis and FastAPI routes
+|   `-- tests/
+|       `-- test_analysis.py         # Deterministic numerical, cutoff and API regressions
 |-- docs/
-|   |-- architecture.md
-|   |-- demo-script.md
-|   |-- research-notes.md
+|   |-- architecture.md              # Design decisions and data flow
+|   |-- demo-script.md               # Customer pitch and technical walkthrough run sheet
+|   |-- deployment-runbook.md        # Deployment and post-deployment verification steps
+|   |-- research-notes.md             # Domain and open-source research notes
 |   `-- evidence/
 |       |-- elexon-january-resolution-audit.json
 |       `-- elexon-resolution-samples.json
-|-- frontend/
-|   |-- src/App.tsx
-|   |-- src/main.tsx
-|   |-- src/styles.css
-|   |-- src/vite-env.d.ts
-|   |-- Dockerfile
-|   |-- index.html
-|   |-- nginx.conf
-|   |-- package.json
-|   |-- tsconfig.json
-|   `-- vite.config.ts
-|-- Dockerfile                 # combined frontend + FastAPI image
-|-- docker-compose.yml
-|-- heroku.yml
-|-- package-lock.json
-|-- package.json
-|-- pytest.ini
-|-- README.md
-|-- requirements.txt
-`-- SUBMISSION_CHECKLIST.md
+`-- frontend/
+    |-- Dockerfile                   # Standalone Nginx frontend container
+    |-- index.html                   # Vite HTML entry point
+    |-- nginx.conf                   # Static serving and API proxy for Compose
+    |-- package.json                 # React, TypeScript, Recharts and frontend scripts
+    |-- tsconfig.json                # TypeScript project configuration
+    |-- vercel.json                  # Vercel API rewrite when frontend is deployed as its own root
+    |-- vite.config.ts               # Vite config and local API proxy
+    `-- src/
+        |-- App.tsx                  # Dashboard and interactions
+        |-- main.tsx                 # React entry point
+        |-- styles.css               # Dashboard styles
+        `-- vite-env.d.ts            # Vite type declarations
 ```
+
+## Run locally
+
+### Requirements
+
+- Python 3.12.
+- Node.js 22 and npm.
+- Docker Engine and Docker Compose are optional for container-based runs.
+
+### Option A: Docker Compose
+
+From the repository root:
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost:8080`. Nginx serves the frontend and proxies `/api/*` to the API service. The Compose configuration uses the `winddesk-data` volume for source snapshots.
+
+### Option B: Single-container Docker image
+
+From the repository root:
+
+```bash
+docker build -t winddesk:local .
+docker run --rm -p 8000:8000 -e ALLOW_DEMO_FALLBACK=true winddesk:local
+```
+
+Open `http://localhost:8000`. FastAPI serves the built frontend and API. The local filesystem cache is not durable unless a persistent volume is mounted.
+
+### Option C: Local development without Docker
+
+Install Python dependencies from the repository root:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Start the backend in terminal 1:
+
+```powershell
+cd backend
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+Start the frontend in terminal 2, from the repository root:
+
+```powershell
+npm ci
+npm run dev --workspace frontend
+```
+
+Open `http://localhost:5173`. Vite proxies `/api/*` to `http://127.0.0.1:8000` by default.
+
+For Linux/macOS, use `python3.12 -m venv .venv`, activate with `source .venv/bin/activate`, and use the same pip/npm commands. Run the backend command from the `backend` directory.
+
+## Tests and build
+
+From the repository root, with Python and Node dependencies installed:
+
+```bash
+python -m pytest -q
+npm ci
+npm run build
+```
+
+The frontend build runs the TypeScript project check and Vite production build. The previously reported build emitted a bundle-size advisory for a 595.24 kB minified main JavaScript chunk (168.41 kB gzip). This warning was documented rather than addressed with an unverified code split.
+
+The previously reported local backend suite passed 53 tests with no failures or skips and one upstream Starlette/AnyIO deprecation warning. Results can vary with later code changes; rerun the commands above before submitting.
+
+## API endpoints
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/health` | Liveness check; does not prove Elexon is reachable |
+| `GET /api/ready` | Application readiness check |
+| `GET /api/meta` | Evaluation scope and source metadata |
+| `GET /api/analysis?month=2026-01&cutoff=09:00` | Validated analysis response; supports the documented refresh/demo options |
+| `GET /docs` | FastAPI OpenAPI documentation on the Render service |
+
+Try the deployed analysis endpoint at [Vercel API analysis](https://w8k3q2m9.vercel.app/api/analysis?month=2026-01&cutoff=09%3A00) or [Render API analysis](https://w8k3q2m9.onrender.com/api/analysis?month=2026-01&cutoff=09%3A00). Inspect the returned source status before interpreting the values.
+
+## Configuration
+
+The provided `.env.example` lists the runtime options. Configure values in the host environment; never commit secrets or local `.env` files.
+
+| Variable | Purpose | Default from the example |
+|---|---|---|
+| `ELEXON_API_BASE` | Elexon BMRS API base URL | `https://data.elexon.co.uk/bmrs/api/v1` |
+| `ALLOW_DEMO_FALLBACK` | Permit a clearly labelled synthetic fallback if live fetch fails and no snapshot exists | `true` |
+| `CACHE_TTL_SECONDS` | Cache freshness in seconds | `900` |
+| `DATA_DIR` | Directory for cached snapshots | `data` |
+| `CALIBRATION_WARMUP_DAYS` | Historical warm-up period | `14` |
+| `CALIBRATION_WINDOW_DAYS` | Trailing calibration window | `14` |
+| `MIN_CALIBRATION_DAYS` | Minimum complete delivery days for calibration | `5` |
+| `CORS_ORIGINS` | Allowed origins for direct cross-origin API calls | Local Vite origins |
+
+The deployed Vercel frontend uses a rewrite for `/api/*` to reach the Render backend. The frontend's code uses relative `/api` requests by default.
+
+## Deployment
+
+### Current hosted setup
+
+- **Frontend:** [https://w8k3q2m9.vercel.app/](https://w8k3q2m9.vercel.app/)
+- **Backend:** [https://w8k3q2m9.onrender.com/](https://w8k3q2m9.onrender.com/)
+- **Vercel configuration:** root `vercel.json` builds the frontend workspace to `frontend/dist` and rewrites `/api/*` to the Render service. `frontend/vercel.json` supports an independent frontend-root deployment.
+
+The health endpoint is a liveness check. Validate `/api/analysis` and inspect the `source` field to distinguish live, cached/stale and synthetic data.
+
+### Container deployment options
+
+The root `Dockerfile` builds the React bundle and runs FastAPI in one container. `docker-compose.yml` instead runs separate API and Nginx services. The repository also includes a `heroku.yml` for a single-container Heroku path. These configurations are provided, but Docker runtime verification was not completed in the environment used for the reported checks.
+
+On platforms with ephemeral filesystems, cached snapshots may be lost after restart or redeployment. Use persistent storage or external object storage before relying on caching as durable infrastructure.
+
+## Known limitations
+
+- This is a historical forecasting analysis pilot, not a complete procurement optimizer or trading system.
+- Evaluation is restricted to national wind forecast and wind outturn data from Elexon.
+- WINDFOR is hourly; actuals are half-hourly and the comparison uses the mean of two complete half-hour readings.
+- Forecast uncertainty is empirical. Its interval coverage is not guaranteed to match the nominal rate in future data.
+- The calibration window is pooled and not conditioned by hour of day or lead-time bucket; lead-time charts are diagnostics, not a conditional probabilistic model.
+- Live API availability and source completeness can change. Coverage and source status must be checked on every run.
+- Docker build/runtime, full browser responsive/accessibility checks, and saved CSV content inspection were not verified as part of the last reported verification pass.
+- The Vite bundle-size advisory remains. It has not been hidden with an unverified optimization.
 
 ## AI-tool disclosure
 
-AI tools assisted development. **Codex** was used to audit and refine the implementation and documentation. **Claude** was also used where applicable in earlier project work. The live API schema and sampled records were verified against Elexon on 26 October 2026. Deployment behavior remains unverified. Reported live sample counts describe that fetched data window and are not deployment or future-feed guarantees.
+AI tools assisted with development and review. **Codex** was used for implementation refinement, testing and documentation; **Claude** was also used during earlier project work. The API contracts and sampled records were checked against Elexon documentation and source responses. All reported verification claims are tied to the specific local run described above and are not a guarantee of future service availability.
 
-## Sources
+## Further reading
 
 - [Elexon FUELHH stream documentation](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream)
 - [Elexon WINDFOR stream documentation](https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/WINDFOR/stream)
-- [Elexon official OpenAPI schema](https://data.elexon.co.uk/swagger/v1/swagger.json)
-- [REint / GridBricks â€” platform and forecasts](https://reint.ai/)
-- [Prognosebuch â€” immutable forecast vintages and transparent backtests](https://github.com/tojacob03/Prognosebuch)
-- [Timescale forecast-store â€” versioned forecast data and OpenSTEF benchmark](https://github.com/timescale/forecast-store)
-- [Energy price forecasting â€” walk-forward evaluation](https://github.com/soentkeblindow/energy-price-forecast)
+- [Elexon OpenAPI schema](https://data.elexon.co.uk/swagger/v1/swagger.json)
+- [REint](https://reint.ai/)
+- [Prognosebuch](https://github.com/tojacob03/Prognosebuch) - immutable forecast vintages and transparent backtests
+- [Timescale forecast-store](https://github.com/timescale/forecast-store) - forecast data storage and benchmarking patterns
+- [Energy price forecasting and risk validation](https://github.com/soentkeblindow/energy-price-forecast-risk-validation) - chronological evaluation patterns
