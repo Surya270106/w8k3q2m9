@@ -1,44 +1,104 @@
-# Submission and release checklist
+# WindDesk — submission and release checklist
 
-Updated 26 October 2026. This checklist separates verified local work from public milestones that still require a deployment or user-supplied information.
+Updated 26 October 2026.
 
-## Local engineering checks
+This checklist distinguishes repository/source review from checks that still need to be run against the exact public release. A page loading successfully does not by itself prove that its API fetched live Elexon data.
 
-- [x] January 2026 raw Elexon resolution audit preserved under `docs/evidence/`.
-- [x] WINDFOR hourly delivery targets use `startTime`; `publishTime` remains the forecast vintage field.
-- [x] FUELHH actuals remain half-hourly source values; the hourly result requires a complete pair and displays both readings.
-- [x] Full backend suite: 33 passed, zero failed/skipped. TestClient originally hung before app dispatch because Windows asyncio loopback socket-pair initialization was blocked by the sandbox; suite passed with local socket access allowed.
-- [x] TypeScript check and Vite production build pass; main JS chunk is 595.24 kB minified / 168.41 kB gzip, with Vite's over-500 kB warning.
-- [ ] Docker Compose build/run: not verified if Docker Engine/Compose is unavailable on the current host.
-- [ ] Browser rendering and console check: not verified.
-- [x] Uvicorn HTTP check: health `ok`, readiness `ready`, unsupported month HTTP 400, and explicit demo analysis schema validated over local HTTP.
-- [x] Fresh Elexon API integration: live source, 744/744 hourly matches (100%), no missing forecast/actual hours, and 1,488/1,488 half-hour actual inputs; fetched 2026-10-26T07:58:58Z.
-- [ ] Git diff/whitespace checks and local branch/remotes: unavailable because `.git` metadata is absent. A bundled Git executable is available, but this is not a Git checkout. Do not run `git init` or overwrite history to work around this.
-- [x] Final local candidate inventory: 34 files. The public `main` tree has 33 blobs; the only added path is `docs/deployment-runbook.md`. Generated builds, dependency folders, caches, `.verify-run`, `.verification-packages`, and local environment files are excluded by ignore rules.
-- [x] Secret/environment scan found no credential patterns or applicant contact values in candidate source files; `.env.example` is the only `.env*` file. Markdown UTF-8/mojibake scan is clean.
+## Current public topology
 
-## Public milestones
+- [x] Public repository: [Surya270106/w8k3q2m9](https://github.com/Surya270106/w8k3q2m9).
+- [x] Frontend deployment configured at [Vercel](https://w8k3q2m9.vercel.app/).
+- [x] Python API deployment configured at [Render](https://w8k3q2m9.onrender.com/).
+- [x] Root `vercel.json` rewrites `/api/*` requests to the Render API.
+- [ ] Verify both deployments and the API anonymously in a private/incognito window (see the exact endpoints below).
+- [ ] Confirm the hosted API returns live Elexon data after an idle/cold start, not a synthetic demo fallback.
 
-- [x] Public source repository exists: [Surya270106/w8k3q2m9](https://github.com/Surya270106/w8k3q2m9).
-- [ ] Reconcile this local working tree with the remote commit and publish reviewed local changes through a valid Git checkout. The present workspace has no Git metadata, so it cannot commit or push these local revisions.
-- [ ] Deploy a pilot application and verify health, readiness, live-data status, matched coverage and browser API requests.
-- [ ] Open repository and app signed out/private browsing session; verify anonymous access.
-- [ ] Record and upload an unlisted YouTube demo under 10 minutes.
-- [ ] Submit the application form only after repository, app and video URLs are verified and the applicant confirms their own personal contact details.
+**Deployment disclosure:** this is a split deployment: Vercel hosts the React frontend and Render hosts the FastAPI backend. The README describes this topology. Do not claim the Python API is hosted on Vercel or Heroku.
 
-## Verification record for this revision
+## Source and method review
 
-| Check | Result |
-|---|---|
-| Backend test suite | 33 passed, 0 failed, 0 skipped |
-| TypeScript and Vite production build | Passed; 595.24 kB main JS chunk warning remains |
-| Docker | Not verified in this workspace unless Docker runtime becomes available |
-| Uvicorn HTTP and live API integration | Passed: health/readiness, HTTP 400 error behavior, schema-valid demo, and fresh live 744/744 result |
-| Browser | Not verified |
-| Public deployment | Not deployed |
-| Video and form | Not completed |
-| Git state | Local `.git` metadata absent; bundled Git executable cannot report a branch or working tree here; no commit or push made |
+The current public `backend/app/main.py` was inspected during this revision:
 
-## Form fields
+- [x] Forecast target time comes from WINDFOR `startTime`; forecast vintage comes from `publishTime`.
+- [x] For each delivery hour, the selection logic uses the latest forecast whose publication time is at or before the chosen cutoff.
+- [x] Actuals are restricted to FUELHH `fuelType=WIND`.
+- [x] The hourly actual is the mean of the `:00` and `:30` half-hour readings for that same hour. If either half-hour is missing, the hourly actual remains missing.
+- [x] Expected periods stay in the coverage denominator; a missing forecast is not silently dropped.
+- [x] Walk-forward calibration filters for completed delivery days strictly earlier than each decision date.
+- [x] Earlier warm-up days are used for initial prior-error calibration and excluded from January headline metrics.
+- [x] The app describes itself as forecast evaluation/decision support, not a procurement-volume calculator or trading recommendation.
 
-The Microsoft submission form requests applicant contact information, a resume link, unlisted video URL, public application URL and GitHub URL. Contact details must be supplied and verified by the applicant. Keep the form unsubmitted until the video and application URLs exist and work anonymously.
+### Explain the warm-up choice in the technical video
+
+WindDesk fetches prior delivery days so that early-January decisions can have an ex-ante calibration history. These rows are used for calibration only, not for the January headline metrics. State this explicitly as a design assumption, because a strict reading of the assignment's date scope may invite a question about fetching earlier days.
+
+## Verification record and remaining engineering checks
+
+| Check | Current evidence | Final release gate |
+|---|---|---|
+| Backend tests | The README records the latest **reported** local run as 53 passed, 0 failed, 0 skipped. The earlier 33-test count in this checklist was stale. | [ ] Run `python -m pytest -q` from the exact final `main` checkout and record the result. Do not rely on either historical count as proof of the final commit. |
+| Frontend build | TypeScript check and Vite production build were previously reported as passing. | [ ] Run `npm run build` from the exact final checkout. |
+| Live Elexon integration | A prior local integration run reported 744/744 hourly matches and 1,488/1,488 half-hour readings on 26 October 2026. This is not proof of current hosted behavior. | [ ] Confirm the same coverage and live-source state through the public API after an idle/cold start. |
+| Docker Compose | Configuration exists; Docker runtime has not been verified in the recorded environment. | [ ] Run the Compose checks below if Docker is available; otherwise keep the README's “not verified” wording. |
+| Single-container Dockerfile | Configuration exists; runtime not verified. | [ ] Build/run the root Dockerfile if Docker is available; otherwise keep “not verified”. |
+| Browser QA | Core controls were exercised in a partial manual pass; CSV contents, keyboard accessibility, responsive layouts, and all error states were not fully checked. | [ ] Check the rendered dashboard, source status, chart, one CSV export, and browser console at minimum. |
+| README/repository access | Public source and README are published. | [ ] Open the repository in a signed-out/private window and ensure the README and Mermaid diagrams render. |
+| Video and form | Not completed as of this checklist revision. | [ ] Record/upload an unlisted video, test its link anonymously, then submit the form. |
+
+## Anonymous deployment checks
+
+Open each URL in a private/incognito browser window.
+
+**Vercel**
+- [ ] [Frontend](https://w8k3q2m9.vercel.app/)
+- [ ] [Health](https://w8k3q2m9.vercel.app/api/health)
+- [ ] [Readiness](https://w8k3q2m9.vercel.app/api/ready)
+- [ ] [January analysis at 09:00 UK cutoff](https://w8k3q2m9.vercel.app/api/analysis?month=2026-01&cutoff=09%3A00)
+
+**Render**
+- [ ] [Frontend served by the Render service](https://w8k3q2m9.onrender.com/)
+- [ ] [Health](https://w8k3q2m9.onrender.com/api/health)
+- [ ] [Readiness](https://w8k3q2m9.onrender.com/api/ready)
+- [ ] [January analysis at 09:00 UK cutoff](https://w8k3q2m9.onrender.com/api/analysis?month=2026-01&cutoff=09%3A00)
+
+For both analysis endpoints, verify the returned source/status identifies real Elexon observations rather than `demo`/synthetic data; expect 744 hourly periods, 744 matched periods when the source is complete, and 1,488 underlying half-hour readings. Check the dashboard's visible source-state label too. A successful health response only proves the process is alive; it does not prove Elexon is reachable.
+
+## Docker checks (only claim success after running them)
+
+From the repository root:
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost:8080`, check the dashboard, then verify `/api/health` and `/api/analysis?month=2026-01&cutoff=09%3A00` through port 8080. Stop the stack with `Ctrl+C`.
+
+For the single-container image:
+
+```bash
+docker build -t winddesk:local .
+docker run --rm -p 8000:8000 -e ALLOW_DEMO_FALLBACK=true winddesk:local
+```
+
+Open `http://localhost:8000` and verify health and analysis. If Docker is not available, leave Docker marked unverified in the README.
+
+## Final submission gates
+
+- [ ] Public `main` contains the reviewed README and this reconciled checklist.
+- [ ] Backend tests and frontend production build have been rerun on the exact final commit.
+- [ ] Vercel frontend and both sets of API endpoints have been checked anonymously after an idle/cold start.
+- [ ] Hosted analysis shows live Elexon source status and the expected matched coverage; synthetic/demo data is clearly labelled and is not passed off as live.
+- [ ] GitHub README renders in a signed-out/private window.
+- [ ] Record two clear sections in one video: customer pitch (5 minutes or less) and technical review (5 minutes or less), with the total under 10 minutes.
+- [ ] Upload the video as **unlisted** and open the video URL in a private window without signing in.
+- [ ] Submit the application form only once the repo URL, app URL, and video URL work anonymously. Enter and verify your own contact details and resume URL.
+
+Form: https://forms.cloud.microsoft/r/FTX6K2bbnU
+
+## Relevant source and deployment files
+
+- `backend/app/main.py` — ingestion, cutoff/vintage selection, half-hour pairing, calibration, metrics and API endpoints.
+- `backend/tests/test_analysis.py` — regression tests.
+- `docs/evidence/elexon-january-resolution-audit.json` — saved source-resolution audit.
+- `vercel.json` — Vercel frontend build and API rewrite.
+- `Dockerfile`, `docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile` — container options.
