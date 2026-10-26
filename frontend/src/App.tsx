@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, CalendarDays,
   CheckCircle2, ChevronDown, Clock3, CloudLightning, Download, ExternalLink,
   Gauge, RefreshCw, ShieldCheck, SlidersHorizontal, Wind, Zap,
 } from 'lucide-react'
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from 'recharts'
 
@@ -101,8 +101,9 @@ function App() {
     actual: r.actualMW,
     forecast: r.forecastMW,
     absError: r.absoluteErrorMW,
-    intervalBand: r.intervalLowMW != null && r.intervalHighMW != null ? [r.intervalLowMW, r.intervalHighMW] : null,
+    intervalBand: Number.isFinite(r.intervalLowMW) && Number.isFinite(r.intervalHighMW) && r.intervalLowMW! >= 0 && r.intervalHighMW! >= r.intervalLowMW! ? [r.intervalLowMW!, r.intervalHighMW!] : null,
   })), [dayRows])
+  const bandHours = chartRows.filter(row => row.intervalBand !== null).length
 
   const refreshData = () => { forceRefreshRef.current = true; setRefreshing(true); setRefreshToken(v => v + 1) }
   const exportCsv = () => {
@@ -128,19 +129,30 @@ function App() {
   const sourceLabel = data?.source === 'live' ? 'LIVE ELEXON' : data?.source === 'cache' ? 'CACHED SNAPSHOT' : data?.source === 'stale-cache' ? 'STALE SNAPSHOT' : data?.source === 'demo' ? 'SYNTHETIC DEMO' : 'CONNECTING'
   const metrics = data?.metrics
 
+  const rankedDays = (data?.daily || []).filter(d => d.wapePct != null)
+  const worstDay = rankedDays.length ? rankedDays.reduce((a, b) => (b.wapePct! > a.wapePct! ? b : a)) : null
+  const bestDay = rankedDays.length ? rankedDays.reduce((a, b) => (b.wapePct! < a.wapePct! ? b : a)) : null
+  const watchItems: string[] = data ? [
+    worstDay ? `Highest daily WAPE: ${fmtDate(worstDay.decisionDate, false)} decision, ${fmtNum(worstDay.wapePct, 1)}% WAPE (best ${bestDay ? `${fmtDate(bestDay.decisionDate, false)}, ${fmtNum(bestDay.wapePct, 1)}%` : '—'})` : 'No complete decision days to rank yet',
+    `Forecast exceeded actual wind in ${fmtNum(metrics?.overforecastPct, 1)}% of matched hours`,
+    `${data.backtest.calibratedDecisionDays} of ${data.backtest.totalDecisionDays} decision days have enough prior history for an 80% band`,
+    `${fmtNum(metrics?.missingForecastPeriods)} hours missing a forecast, ${fmtNum(metrics?.missingActualPeriods)} missing an actual`,
+  ] : []
+
+
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand-lockup"><div className="brand-mark"><Wind size={20} strokeWidth={1.8} /></div><div><div className="brand-name">WINDDESK</div><div className="brand-sub">FORECAST INTELLIGENCE</div></div></div>
       <div className="workspace-pill"><span className="live-dot"/><span>GB POWER DESK</span><ChevronDown size={13}/></div>
       <div className="nav-label">WORKSPACE</div>
       <nav className="main-nav">
-        <button className={`nav-link ${activeNav === 'Overview' ? 'active' : ''}`} onClick={() => setActiveNav('Overview')}><Activity size={17}/><span>Overview</span><span className="nav-index">01</span></button>
-        <button className={`nav-link ${activeNav === 'Forecast accuracy' ? 'active' : ''}`} onClick={() => {setActiveNav('Forecast accuracy'); document.getElementById('accuracy-panel')?.scrollIntoView({behavior:'smooth',block:'start'})}}><Gauge size={17}/><span>Forecast accuracy</span></button>
-        <button className={`nav-link ${activeNav === 'Hourly intervals' ? 'active' : ''}`} onClick={() => {setActiveNav('Hourly intervals'); document.getElementById('period-table')?.scrollIntoView({behavior:'smooth',block:'start'})}}><CalendarDays size={17}/><span>Hourly intervals</span></button>
+        <button aria-label="Overview" className={`nav-link ${activeNav === 'Overview' ? 'active' : ''}`} onClick={() => setActiveNav('Overview')}><Activity size={17}/><span>Overview</span><span className="nav-index">01</span></button>
+        <button aria-label="Forecast accuracy" className={`nav-link ${activeNav === 'Forecast accuracy' ? 'active' : ''}`} onClick={() => {setActiveNav('Forecast accuracy'); document.getElementById('accuracy-panel')?.scrollIntoView({behavior:'smooth',block:'start'})}}><Gauge size={17}/><span>Forecast accuracy</span></button>
+        <button aria-label="Hourly intervals" className={`nav-link ${activeNav === 'Hourly intervals' ? 'active' : ''}`} onClick={() => {setActiveNav('Hourly intervals'); document.getElementById('period-table')?.scrollIntoView({behavior:'smooth',block:'start'})}}><CalendarDays size={17}/><span>Hourly intervals</span></button>
       </nav>
       <div className="sidebar-divider"/>
       <div className="nav-label">DATA & CONTROLS</div>
-      <button className="nav-link" onClick={() => setShowMethodology(v => !v)}><SlidersHorizontal size={17}/><span>Methodology</span><span className="method-dot">i</span></button>
+      <button aria-label="Methodology" className="nav-link" onClick={() => setShowMethodology(v => !v)}><SlidersHorizontal size={17}/><span>Methodology</span><span className="method-dot">i</span></button>
       <a className="nav-link nav-external" href="https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/FUELHH/stream" target="_blank" rel="noreferrer"><ExternalLink size={16}/><span>Elexon data source</span></a>
       <div className="sidebar-bottom">
         <div className="status-card"><div className="status-icon"><ShieldCheck size={16}/></div><div><strong>Read-only analysis</strong><span>No automated trades</span></div></div>
@@ -151,23 +163,24 @@ function App() {
     <main className="main-content">
       <header className="topbar">
         <div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><strong>Wind procurement</strong></div>
-        <div className="topbar-right"><div className="environment-tag" title={data?.meta.fetchedAt ? `Last successful source fetch: ${fmtTime(data.meta.fetchedAt)}` : 'No successful live source fetch recorded'}><span className={`env-dot ${sourceLive ? 'green' : 'amber'}`}/>{loading ? 'CONNECTING' : sourceLabel}</div><div className="topbar-avatar">GB</div></div>
+        <div className="topbar-right"><div className="environment-tag" role="status" aria-live="polite" title={data?.meta.fetchedAt ? `Last successful source fetch: ${fmtTime(data.meta.fetchedAt)}` : 'No successful live source fetch recorded'}><span className={`env-dot ${sourceLive ? 'green' : 'amber'}`}/>{loading ? 'CONNECTING' : sourceLabel}</div><div className="topbar-avatar">GB</div></div>
       </header>
 
       <div className="page-wrap">
-        <section className="hero-row">
-          <div>
-            <div className="eyebrow"><span className="eyebrow-line"/> DAY-AHEAD PROCUREMENT <span className="eyebrow-sep">·</span> UK NATIONAL WIND</div>
-            <h1>Know what the wind<br/><em>will deliver.</em></h1>
-            <p className="hero-copy">A decision-time view of wind generation forecasts — with measurable uncertainty before the day-ahead buy.</p>
-            <div className="scope-line"><CalendarDays size={14}/><span>Decision dates <b>01–31 Jan 2026</b></span><span className="scope-dot">·</span><span>Delivery dates <b>02 Jan–01 Feb</b></span></div>
+        <section className="forecast-workspace" aria-label="Wind forecast workspace">
+        <section className="hero-row workspace-heading">
+          <div className="hero-main">
+            <div className="eyebrow">Forecast workspace <span className="eyebrow-sep">·</span> UK national wind</div>
+            <h1>Wind forecasts <em>for decisions.</em></h1>
+            <p className="hero-copy">Compare archived Elexon wind forecasts with measured generation at the day-ahead procurement cut-off.</p>
+            <div className="scope-line"><span>Decision dates <b>01–31 Jan 2026</b></span><span className="scope-dot">·</span><span>Delivery dates <b>02 Jan–01 Feb</b></span></div>
           </div>
-          <div className="hero-visual" aria-label="Wind generation overview illustration">
-            <div className="orbital orbital-one"/><div className="orbital orbital-two"/><div className="orbital orbital-three"/>
-            <div className="hero-visual-core"><Wind size={38} strokeWidth={1.15}/><span>WIND<br/>OUTLOOK</span></div>
-            <div className="floating-readout readout-a"><span className="readout-overline">FORECAST HORIZON</span><strong>D+1</strong><span>Day-ahead</span></div>
-            <div className="floating-readout readout-b"><span className="readout-overline">EVALUATION</span><strong>60 <small>MIN</small></strong><span>Hourly comparison</span></div>
-          </div>
+          <dl className="context-facts" aria-label="Selected decision context">
+            <div><dt>Decision date</dt><dd>{selectedDay ? fmtDate(selectedDay.decisionDate, false) : '—'}</dd></div>
+            <div><dt>Delivery date</dt><dd>{selectedDay ? fmtDate(selectedDay.deliveryDate, false) : '—'}</dd></div>
+            <div><dt>UK cut-off</dt><dd>{cutoff}</dd></div>
+            <div><dt>Selected vintage</dt><dd>{selectedDay?.latestPublishTime ? fmtTime(selectedDay.latestPublishTime) : '—'}</dd></div>
+          </dl>
         </section>
 
         {data?.source === 'demo' && <div className="data-warning"><AlertTriangle size={16}/><div><strong>Synthetic demo data is active.</strong> Values below are generated fixtures, not Elexon observations. Do not use them for operational or procurement decisions.</div></div>}
@@ -182,13 +195,20 @@ function App() {
           <label className="demo-mode-toggle" title="Use only synthetic records for an offline UI walkthrough"><input type="checkbox" checked={demoMode} onChange={e => { setDemoMode(e.target.checked); if (!e.target.checked) { forceRefreshRef.current = true; setRefreshToken(v => v + 1) } }} /><span>Demo fixture</span></label><button className="refresh-button" onClick={refreshData} disabled={loading || refreshing}><RefreshCw size={15} className={refreshing ? 'spin' : ''}/><span>{refreshing ? 'Refreshing' : 'Refresh data'}</span></button>
         </section>
 
+        <div className="resolution-strip" aria-label="Source and comparison resolution">
+          <div><span>FORECAST FEED</span><strong>{data ? `WINDFOR · ${fmtNum(data.meta.sourceForecastResolutionMinutes)} min` : 'WINDFOR · awaiting data'}</strong></div>
+          <div><span>ACTUAL FEED</span><strong>{data ? `FUELHH · ${fmtNum(data.meta.sourceActualResolutionMinutes)} min` : 'FUELHH · awaiting data'}</strong></div>
+          <div><span>EVALUATION INTERVAL</span><strong>{data ? `${fmtNum(data.meta.evaluationResolutionMinutes)} min` : 'Awaiting data'}</strong></div>
+          <div><span>ACTUALS IN SOURCE WINDOW</span><strong>{data ? `${fmtNum(data.meta.sourceActualHalfHourlyPeriods)} / ${fmtNum(data.meta.expectedSourceActualHalfHourlyPeriods)} half-hours` : 'Awaiting data'}</strong></div>
+        </div>
+
         <section className="metric-grid" aria-label="Forecast accuracy summary">
-          <article className="metric-card metric-primary"><div className="metric-top"><span>Mean absolute error</span><span className="metric-symbol"><Activity size={16}/></span></div><div className="metric-value">{loading ? '—' : fmtNum(metrics?.maeMW)} <small>MW</small></div><div className="metric-foot"><span className="metric-dot green-dot"/> Typical miss per hourly interval</div><div className="metric-accent-line"/></article>
-          <article className="metric-card"><div className="metric-top"><span>Weighted absolute error</span><span className="metric-symbol"><Gauge size={16}/></span></div><div className="metric-value">{loading ? '—' : fmtNum(metrics?.wapePct, 2)}<small>%</small></div><div className="metric-foot">Absolute errors ÷ total actual wind</div></article>
-          <article className="metric-card"><div className="metric-top"><span>Forecast bias</span><span className={`bias-icon ${errorTone(metrics?.biasMW ?? null)}`}>{(metrics?.biasMW ?? 0) >= 0 ? <ArrowUpRight size={16}/> : <ArrowDownRight size={16}/>}</span></div><div className={`metric-value ${errorTone(metrics?.biasMW ?? null)}`}>{loading ? '—' : `${(metrics?.biasMW ?? 0) > 0 ? '+' : ''}${fmtNum(metrics?.biasMW)}`} <small>MW</small></div><div className="metric-foot">{(metrics?.biasMW ?? 0) > 0 ? 'Over-forecast on average' : 'Under-forecast on average'}</div></article>
-          <article className="metric-card"><div className="metric-top"><span>P90 absolute error</span><span className="metric-symbol"><Gauge size={16}/></span></div><div className="metric-value">{loading ? '—' : fmtNum(metrics?.p90AbsErrorMW)}<small> MW</small></div><div className="metric-foot">90th percentile historical absolute miss</div></article>
-          <article className="metric-card"><div className="metric-top"><span>Over-forecast frequency</span><span className="metric-symbol"><ArrowUpRight size={16}/></span></div><div className="metric-value">{loading ? '—' : fmtNum(metrics?.overforecastPct, 1)}<small>%</small></div><div className="metric-foot">Forecast exceeds actual wind outturn</div></article>
-          <article className="metric-card"><div className="metric-top"><span>Paired hourly coverage</span><span className="metric-symbol"><CheckCircle2 size={16}/></span></div><div className="metric-value">{loading ? '—' : fmtNum(metrics?.matchedPeriods)}<small> / {fmtNum(metrics?.expectedPeriods ?? 744)}</small></div><div className="metric-foot">{loading ? 'Matching actuals and forecast vintages' : `${fmtNum(metrics?.coveragePct, 1)}% of expected hourly intervals`}<span className="metric-detail">{loading ? '' : `Forecasts ${fmtNum(metrics?.forecastPeriods)} · actual hours ${fmtNum(metrics?.actualPeriods)} · missing forecast/actual hours ${fmtNum(metrics?.missingForecastPeriods)}/${fmtNum(metrics?.missingActualPeriods)} · FUELHH half-hours ${fmtNum(data?.meta.sourceActualHalfHourlyPeriods)}/${fmtNum(data?.meta.expectedSourceActualHalfHourlyPeriods)}`}</span></div></article>
+          <article className="metric-card metric-primary"><div className="metric-top"><span>Mean absolute error</span><span className="metric-symbol"><Activity size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.maeMW)} <small>MW</small></div><div className="metric-foot"><span className="metric-dot green-dot"/> Typical miss per hourly interval</div><div className="metric-accent-line"/></article>
+          <article className="metric-card"><div className="metric-top"><span>Weighted absolute error</span><span className="metric-symbol"><Gauge size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.wapePct, 2)}<small>%</small></div><div className="metric-foot">Absolute errors ÷ total actual wind</div></article>
+          <article className="metric-card"><div className="metric-top"><span>Forecast bias</span><span className={'bias-icon ' + errorTone(metrics?.biasMW ?? null)}>{metrics?.biasMW == null ? <Activity size={16}/> : metrics.biasMW >= 0 ? <ArrowUpRight size={16}/> : <ArrowDownRight size={16}/>}</span></div><div className={'metric-value ' + errorTone(metrics?.biasMW ?? null)}>{loading ? '—' : fmtNum(metrics?.biasMW)} <small>MW</small></div><div className="metric-foot">{loading ? 'Waiting for matched hours' : metrics?.biasMW == null ? 'No matched bias estimate available' : metrics.biasMW > 0 ? 'Over-forecast on average' : metrics.biasMW < 0 ? 'Under-forecast on average' : 'No average signed bias'}</div></article>
+          <article className="metric-card"><div className="metric-top"><span>P90 absolute error</span><span className="metric-symbol"><Gauge size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.p90AbsErrorMW)}<small> MW</small></div><div className="metric-foot">90th percentile historical absolute miss</div></article>
+          <article className="metric-card"><div className="metric-top"><span>Over-forecast frequency</span><span className="metric-symbol"><ArrowUpRight size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.overforecastPct, 1)}<small>%</small></div><div className="metric-foot">Forecast exceeds actual wind outturn</div></article>
+          <article className="metric-card"><div className="metric-top"><span>Paired hourly coverage</span><span className="metric-symbol"><CheckCircle2 size={16}/></span></div><div className={`metric-value ${loading ? 'is-loading' : ''}`}>{loading ? '—' : fmtNum(metrics?.matchedPeriods)}<small> / {fmtNum(metrics?.expectedPeriods ?? 744)}</small></div><div className="metric-foot">{loading ? 'Matching actuals and forecast vintages' : `${fmtNum(metrics?.coveragePct, 1)}% of expected hourly intervals`}<span className="metric-detail">{loading ? '' : `Forecasts ${fmtNum(metrics?.forecastPeriods)} · actual hours ${fmtNum(metrics?.actualPeriods)} · missing forecast/actual hours ${fmtNum(metrics?.missingForecastPeriods)}/${fmtNum(metrics?.missingActualPeriods)} · FUELHH half-hours ${fmtNum(data?.meta.sourceActualHalfHourlyPeriods)}/${fmtNum(data?.meta.expectedSourceActualHalfHourlyPeriods)}`}</span></div></article>
         </section>
 
         <section className="extended-metrics" aria-label="Additional forecast accuracy metrics">
@@ -200,24 +220,25 @@ function App() {
 
         <section className="insight-grid">
           <article className="panel forecast-panel">
-            <div className="panel-header"><div><div className="panel-kicker">DELIVERY PROFILE <span className="kicker-dot"/></div><h2>Forecast vs actual generation</h2><p>{selectedDay ? `Decision ${fmtDate(selectedDay.decisionDate)} · delivery ${fmtDate(selectedDay.deliveryDate)}` : 'Loading selected decision profile'}</p></div><button className="ghost-button" onClick={exportCsv} disabled={!data || !dayRows.length}><Download size={14}/> Export CSV</button></div>
-            <div className="chart-legend"><span><i className="legend-forecast"/> Forecast at cut-off</span><span><i className="legend-actual"/> Actual wind outturn</span><span className="legend-band"/> Prior-only 80% empirical band <span className="legend-unit">MW · hourly intervals</span></div>
-            <div className="forecast-chart">
-              {loading ? <div className="chart-empty"><span className="loader-ring"/>Loading Elexon time series…</div> : chartRows.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={chartRows} margin={{top:14,right:12,left:0,bottom:2}}>
-                <defs><linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#76c9b4" stopOpacity={0.20}/><stop offset="100%" stopColor="#76c9b4" stopOpacity={0.005}/></linearGradient></defs>
-                <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#283640"/>
-                <XAxis dataKey="time" tick={{fill:'#8495a1',fontSize:10}} tickLine={false} axisLine={false} interval={5} minTickGap={20}/>
-                <YAxis tick={{fill:'#8495a1',fontSize:10}} tickLine={false} axisLine={false} width={48} tickFormatter={v => `${(v/1000).toFixed(0)}k`}/>
-                <Tooltip content={<ForecastTooltip/>} cursor={{stroke:'#607480',strokeDasharray:'3 4'}}/>
-                <Area type="monotone" dataKey="intervalBand" name="Prior-only empirical 80% band" stroke="none" fill="#8ba9ce" fillOpacity={0.16} connectNulls={false} isAnimationActive={false}/>
-                <Area type="monotone" dataKey="actual" name="Actual wind" stroke="#75c9b4" strokeWidth={2.2} fill="url(#actualFill)" connectNulls={false} activeDot={{r:4,stroke:'#0f1d25',strokeWidth:2}}/>
-                <Line type="monotone" dataKey="forecast" name="Forecast at cut-off" stroke="#d7a55c" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls={false} activeDot={{r:4,fill:'#d7a55c',stroke:'#0f1d25',strokeWidth:2}}/>
+            <div className="panel-header forecast-panel-header"><div><div className="panel-kicker">DELIVERY PROFILE <span className="kicker-dot"/></div><h2>Forecast vs actual generation</h2><p>{selectedDay ? `Decision ${fmtDate(selectedDay.decisionDate)} · delivery ${fmtDate(selectedDay.deliveryDate)}` : 'Loading selected decision profile'}</p></div><div className="forecast-actions"><span className="unit-badge">{data ? `${fmtNum(data.meta.evaluationResolutionMinutes)}-min intervals` : 'Hourly intervals'}</span><button className="ghost-button" onClick={exportCsv} disabled={!data || !dayRows.length}><Download size={14}/> Export CSV</button></div></div>
+            <div className="chart-legend"><span><i className="legend-forecast"/> Forecast at cut-off</span><span><i className="legend-actual"/> Actual wind outturn</span>{bandHours > 0 ? <span><i className="legend-band"/> Prior-only empirical 80% band ({bandHours}/{chartRows.length} hours)</span> : <span className="legend-band-missing">Prior-only band unavailable for this day</span>}<span className="legend-unit">MW · hourly intervals</span></div>
+            <div className="forecast-chart forecast-chart-primary" role="img" aria-label="Hourly wind generation forecast, actual outturn and uncertainty band">
+              {loading ? <div className="chart-empty"><span className="loader-ring"/>Loading Elexon time series…</div> : chartRows.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={chartRows} margin={{top:20,right:16,left:8,bottom:8}}>
+                <defs><linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#148937" stopOpacity={0.16}/><stop offset="100%" stopColor="#148937" stopOpacity={0.005}/></linearGradient></defs>
+                <CartesianGrid vertical={false} stroke="#e5ebe6" strokeDasharray="3 5"/>
+                <XAxis dataKey="time" tick={{fill:'#68736b',fontSize:12}} tickLine={false} axisLine={{stroke:'#d7ded8'}} interval={5} minTickGap={20}/>
+                <YAxis tick={{fill:'#68736b',fontSize:12}} tickLine={false} axisLine={false} width={54} tickFormatter={v => `${(v/1000).toFixed(0)}k`} label={{value:'MW',angle:-90,position:'insideLeft',style:{fill:'#7a847d',fontSize:11}}}/>
+                <Tooltip content={<ForecastTooltip/>} cursor={{stroke:'#8ba091',strokeDasharray:'3 4'}}/>
+                {bandHours > 0 && <Area type="monotone" dataKey="intervalBand" name="Prior-only empirical 80% band" stroke="#8dbf99" strokeWidth={1} fill="#83c195" fillOpacity={0.22} connectNulls={false} isAnimationActive={false}/>}
+                <Area animationDuration={600} animationEasing="ease-out" type="monotone" dataKey="actual" name="Actual wind" stroke="#148937" strokeWidth={2.6} fill="url(#actualFill)" connectNulls={false} activeDot={{r:4,stroke:'#ffffff',strokeWidth:2}}/>
+                <Line animationDuration={600} animationEasing="ease-out" type="monotone" dataKey="forecast" name="Forecast at cut-off" stroke="#292e2a" strokeWidth={2.4} strokeDasharray="6 4" dot={false} connectNulls={false} activeDot={{r:4,fill:'#292e2a',stroke:'#ffffff',strokeWidth:2}}/>
               </AreaChart></ResponsiveContainer> : <div className="chart-empty">No matching periods for this date.</div>}
             </div>
             <div className="chart-footer"><div><span className="foot-label">ACTUAL PEAK</span><strong>{fmtMW(Math.max(0, ...dayRows.map(r => r.actualMW || 0)))}</strong></div><div><span className="foot-label">DAY MEAN ABS. ERROR</span><strong>{fmtMW(selectedDay?.maeMW)}</strong></div><div><span className="foot-label">MATCHED PERIODS</span><strong>{selectedDay?.matchedPeriods ?? '—'} <small>of 24 hourly intervals</small></strong></div></div>
           </article>
 
-          <article className="panel decision-panel">
+          <div className="side-stack">
+          <article className="panel decision-panel" key={selectedDay?.decisionDate}>
             <div className="panel-header compact"><div><div className="panel-kicker">DECISION SNAPSHOT</div><h2>What was known?</h2><p>Selected day’s information set</p></div><div className="snapshot-icon"><Zap size={18}/></div></div>
             <div className="snapshot-status"><span className="snapshot-status-dot"/><span>Forecast selected at decision cut-off</span></div>
             <div className="snapshot-row"><span>Decision date</span><strong>{fmtDate(selectedDay?.decisionDate)}</strong></div>
@@ -230,6 +251,25 @@ function App() {
             <div className="decision-rule"><div className="rule-icon"><CloudLightning size={16}/></div><div><strong>Wind-risk signal</strong><p>{decisionText(selectedDay?.biasMW ?? null, selectedDay?.wapePct ?? null)}</p></div></div>
             <div className="snapshot-note"><ShieldCheck size={14}/><span>The buffer is calibrated from errors on fully completed prior delivery days only. It is not a procurement quantity or trading instruction.</span></div>
           </article>
+          <article className="watch-list" aria-label="Watch list">
+            <div className="watch-kicker">Evaluation signals</div>
+            <p className="watch-intro">Period-level findings from the selected analysis run.</p>
+            <ul>{watchItems.length ? watchItems.map((t, k) => <li key={k}>{t}</li>) : <li>Waiting for analysis data…</li>}</ul>
+          </article>
+          <article className="panel quality-panel" aria-label="Data quality and coverage">
+            <div className="quality-heading"><div><div className="panel-kicker">DATA QUALITY</div><h2>Coverage & pairing</h2></div><span className="quality-state">{loading ? 'LOADING' : data ? 'SOURCE COUNTS' : 'NO DATA'}</span></div>
+            <div className="quality-total">{data ? `${fmtNum(metrics?.matchedPeriods)} / ${fmtNum(metrics?.expectedPeriods)}` : '—'}<small>matched hourly intervals</small></div>
+            <div className="coverage-track" role="progressbar" aria-label="Matched hourly interval coverage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={data ? Math.max(0, Math.min(100, metrics?.coveragePct ?? 0)) : 0}><span style={{width: `${data ? Math.max(0, Math.min(100, metrics?.coveragePct ?? 0)) : 0}%`}}/></div>
+            <div className="quality-facts">
+              <div><span>Forecast hours</span><strong>{data ? `${fmtNum(metrics?.forecastPeriods)} / ${fmtNum(metrics?.expectedPeriods)}` : '—'}</strong></div>
+              <div><span>Actual hours</span><strong>{data ? `${fmtNum(metrics?.actualPeriods)} / ${fmtNum(metrics?.expectedPeriods)}` : '—'}</strong></div>
+              <div><span>Missing forecast</span><strong>{data ? fmtNum(metrics?.missingForecastPeriods) : '—'}</strong></div>
+              <div><span>Missing actual</span><strong>{data ? fmtNum(metrics?.missingActualPeriods) : '—'}</strong></div>
+            </div>
+            <p className="quality-note">Each evaluation hour requires a forecast and both matching FUELHH half-hours. Incomplete pairs remain excluded.</p>
+          </article>
+          </div>
+        </section>
         </section>
 
         <section className="analysis-grid" id="accuracy-panel">
@@ -240,7 +280,7 @@ function App() {
                 const h = Math.max(d.wapePct == null ? 0 : 5, Math.min(100, (d.wapePct || 0) * 4.2))
                 return <button className={`daily-bar-cell ${selectedDay?.decisionDate === d.decisionDate ? 'selected' : ''}`} key={d.decisionDate} onClick={() => setSelectedDate(d.decisionDate)} title={`Decision ${d.decisionDate} → delivery ${d.deliveryDate}: ${d.wapePct == null ? 'no data' : `${d.wapePct}% WAPE`}`}>
                   <span className="bar-value">{idx % 5 === 0 || d.decisionDate === selectedDay?.decisionDate ? (d.wapePct == null ? '—' : `${d.wapePct.toFixed(1)}`) : ''}</span>
-                  <span className="bar-track"><span className="bar-fill" style={{height:`${h}%`}}/></span>
+                  <span className="bar-track"><span className="bar-fill" style={{height:`${h}%`,'--i':idx} as CSSProperties}/></span>
                   <span className="bar-label">{idx % 2 === 0 ? d.label.split(' ')[0] : ''}</span>
                 </button>
               })}
@@ -250,12 +290,12 @@ function App() {
           </article>
           <article className="panel error-panel">
             <div className="panel-header compact"><div><div className="panel-kicker">ERROR DISTRIBUTION</div><h2>Hourly forecast error</h2><p>Absolute forecast error for selected delivery.</p></div></div>
-            <div className="error-chart-wrap">{loading ? <div className="chart-empty">Loading…</div> : <ResponsiveContainer width="100%" height="100%"><LineChart data={chartRows} margin={{top:10,right:8,left:0,bottom:0}}>
-              <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#283640"/>
-              <XAxis dataKey="time" tick={{fill:'#8495a1',fontSize:9}} tickLine={false} axisLine={false} interval={11}/>
-              <YAxis tick={{fill:'#8495a1',fontSize:9}} tickLine={false} axisLine={false} width={44} tickFormatter={v => `${(v/1000).toFixed(1)}k`}/>
-              <Tooltip content={<ErrorTooltip/>}/><ReferenceLine y={selectedDay?.maeMW || 0} stroke="#8c9ba5" strokeDasharray="3 3"/>
-              <Line type="monotone" dataKey="absError" name="Absolute error" stroke="#db9c61" strokeWidth={1.8} dot={false} connectNulls={false}/>
+            <div className="error-chart-wrap" role="img" aria-label="Selected delivery day hourly absolute forecast errors">{loading ? <div className="chart-empty">Loading…</div> : <ResponsiveContainer width="100%" height="100%"><LineChart data={chartRows} margin={{top:10,right:8,left:0,bottom:0}}>
+              <CartesianGrid vertical={false} stroke="#eaeae8"/>
+              <XAxis dataKey="time" tick={{fill:'#5a5856',fontSize:11}} tickLine={false} axisLine={false} interval={11}/>
+              <YAxis tick={{fill:'#5a5856',fontSize:11}} tickLine={false} axisLine={false} width={44} tickFormatter={v => `${(v/1000).toFixed(1)}k`}/>
+              <Tooltip content={<ErrorTooltip/>}/><ReferenceLine y={selectedDay?.maeMW || 0} stroke="#949291" strokeDasharray="3 3"/>
+              <Line animationDuration={500} animationEasing="ease-out" type="monotone" dataKey="absError" name="Absolute error" stroke="#c27a1a" strokeWidth={1.8} dot={false} connectNulls={false}/>
             </LineChart></ResponsiveContainer>}</div>
             <div className="error-summary"><span>Selected day’s MAE benchmark</span><strong>{fmtMW(selectedDay?.maeMW)}</strong></div>
           </article>
@@ -264,12 +304,12 @@ function App() {
 
         <section className="panel horizon-panel" id="horizon-panel">
           <div className="panel-header"><div><div className="panel-kicker">FORECAST LEAD-TIME DIAGNOSTICS</div><h2>Where does accuracy degrade?</h2><p>Error by the actual age of the selected forecast vintage at delivery time. Empty bands mean no matched sample.</p></div><span className="unit-badge">MAE / MW</span></div>
-          <div className="horizon-chart">{loading ? <div className="chart-empty">Calculating horizon diagnostics…</div> : <ResponsiveContainer width="100%" height="100%"><BarChart data={data?.horizon || []} margin={{top:12,right:15,left:0,bottom:0}}>
-            <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#283640"/>
-            <XAxis dataKey="band" tick={{fill:'#8495a1',fontSize:10}} tickLine={false} axisLine={false}/>
-            <YAxis tick={{fill:'#8495a1',fontSize:10}} tickLine={false} axisLine={false} width={55} tickFormatter={v => `${(v/1000).toFixed(1)}k`}/>
+          <div className="horizon-chart" role="img" aria-label="Forecast accuracy by lead-time band">{loading ? <div className="chart-empty">Calculating horizon diagnostics…</div> : <ResponsiveContainer width="100%" height="100%"><BarChart data={data?.horizon || []} margin={{top:12,right:15,left:0,bottom:0}}>
+            <CartesianGrid vertical={false} stroke="#eaeae8"/>
+            <XAxis dataKey="band" tick={{fill:'#5a5856',fontSize:12}} tickLine={false} axisLine={false}/>
+            <YAxis tick={{fill:'#5a5856',fontSize:12}} tickLine={false} axisLine={false} width={55} tickFormatter={v => `${(v/1000).toFixed(1)}k`}/>
             <Tooltip content={<HorizonTooltip/>}/>
-            <Bar dataKey="maeMW" name="MAE" fill="#75c4aa" radius={[3,3,0,0]} maxBarSize={42}/>
+            <Bar animationDuration={500} animationEasing="ease-out" dataKey="maeMW" name="MAE" fill="#148937" radius={[3,3,0,0]} maxBarSize={42}/>
           </BarChart></ResponsiveContainer>}</div>
           <div className="horizon-foot"><span><b>{data?.backtest.calibratedDecisionDays ?? 0}</b> / 31 decision days had enough prior calibration history</span><span>Mean interval coverage <b>{data?.backtest.meanObservedCoveragePct == null ? '—' : `${fmtNum(data.backtest.meanObservedCoveragePct, 1)}%`}</b> vs nominal 80%</span><span>Mean interval width <b>{fmtMW(data?.backtest.meanIntervalWidthMW)}</b></span></div>
           <div className="horizon-note">Walk-forward diagnostic: each day’s interval is estimated only from matched errors on fully completed delivery days before that decision date. It is not a guarantee of future coverage.</div>
@@ -277,24 +317,35 @@ function App() {
 
         <section className="panel histogram-panel" id="error-distribution">
           <div className="panel-header"><div><div className="panel-kicker">SIGNED ERROR DISTRIBUTION</div><h2>How forecast misses are distributed</h2><p>January hourly evaluation intervals only. Negative values mean wind was under-forecast; positive values mean wind was over-forecast.</p></div><span className="unit-badge">FORECAST − ACTUAL · MW</span></div>
-          <div className="histogram-chart">{loading ? <div className="chart-empty">Loading error distribution…</div> : data?.histogram?.length ? <ResponsiveContainer width="100%" height="100%"><BarChart data={data.histogram} margin={{top:12,right:15,left:0,bottom:8}}>
-            <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#283640"/>
-            <XAxis dataKey="centerMW" tick={{fill:'#8495a1',fontSize:10}} tickLine={false} axisLine={false} minTickGap={26} tickFormatter={v => `${Number(v) >= 0 ? '+' : ''}${(Number(v)/1000).toFixed(1)}k`}/>
-            <YAxis dataKey="count" tick={{fill:'#8495a1',fontSize:10}} tickLine={false} axisLine={false} width={42} allowDecimals={false}/>
-            <ReferenceLine x={0} stroke="#9aa9b2" strokeDasharray="3 3"/>
+          <div className="histogram-chart" role="img" aria-label="Distribution of signed hourly forecast errors">{loading ? <div className="chart-empty">Loading error distribution…</div> : data?.histogram?.length ? <ResponsiveContainer width="100%" height="100%"><BarChart data={data.histogram} margin={{top:12,right:15,left:0,bottom:8}}>
+            <CartesianGrid vertical={false} stroke="#eaeae8"/>
+            <XAxis dataKey="centerMW" tick={{fill:'#5a5856',fontSize:12}} tickLine={false} axisLine={false} minTickGap={26} tickFormatter={v => `${Number(v) >= 0 ? '+' : ''}${(Number(v)/1000).toFixed(1)}k`}/>
+            <YAxis dataKey="count" tick={{fill:'#5a5856',fontSize:12}} tickLine={false} axisLine={false} width={42} allowDecimals={false}/>
+            <ReferenceLine x={0} stroke="#949291" strokeDasharray="3 3"/>
             <Tooltip content={<HistogramTooltip/>}/>
-            <Bar dataKey="count" name="Periods" fill="#d7a55c" radius={[3,3,0,0]} maxBarSize={36}/>
+            <Bar animationDuration={500} animationEasing="ease-out" dataKey="count" name="Periods" radius={[2,2,0,0]} maxBarSize={36}>{data.histogram.map((h, i) => <Cell key={i} fill={h.centerMW > 0 ? '#c27a1a' : '#148937'}/>)}</Bar>
           </BarChart></ResponsiveContainer> : <div className="chart-empty">No matched forecast errors are available.</div>}</div>
           <div className="histogram-foot"><span><b>{fmtNum(data?.metrics.matchedPeriods ?? 0)}</b> matched hourly intervals</span><span>Mean signed bias <b>{data?.metrics.biasMW == null ? '—' : `${data.metrics.biasMW > 0 ? '+' : ''}${fmtMW(data.metrics.biasMW)}`}</b></span><span>P90 absolute error <b>{fmtMW(data?.metrics.p90AbsErrorMW)}</b></span></div>
         </section>
 
         <section className="panel table-panel" id="period-table">
           <div className="panel-header table-head"><div><div className="panel-kicker">AUDITABLE DETAIL</div><h2>Hourly interval ledger</h2><p>Each hourly actual is the mean of its two half-hour FUELHH readings; missing readings stay visible.</p></div><div className="table-count"><span>{dayRows.length} rows</span><span className="table-sep"/><span>60-min comparison</span></div></div>
-           <div className="table-scroll"><table><thead><tr><th>HOUR</th><th>DELIVERY TIME</th><th>FORECAST <small>MW</small></th><th>ACTUAL :00 <small>MW</small></th><th>ACTUAL :30 <small>MW</small></th><th>HOURLY MEAN <small>MW</small></th><th>ERROR <small>MW</small></th><th>PUBLISHED AT</th></tr></thead><tbody>
+           <div className="table-scroll"><table><thead><tr><th scope="col">HOUR</th><th scope="col">DELIVERY TIME</th><th scope="col">FORECAST <small>MW</small></th><th scope="col">ACTUAL :00 <small>MW</small></th><th scope="col">ACTUAL :30 <small>MW</small></th><th scope="col">HOURLY MEAN <small>MW</small></th><th scope="col">ERROR <small>MW</small></th><th scope="col">PUBLISHED AT</th></tr></thead><tbody>
              {dayRows.slice(0, 24).map(r => <tr key={r.startTime}><td><span className="period-chip">H {String(r.intervalIndex).padStart(2,'0')}</span></td><td className="time-cell">{shortTime(r.startTime)}</td><td className="number-cell forecast-number">{fmtNum(r.forecastMW)}</td><td className="number-cell">{fmtNum(r.actualHalfHour00MW)}</td><td className="number-cell">{fmtNum(r.actualHalfHour30MW)}</td><td className="number-cell">{fmtNum(r.actualMW)}</td><td className={`number-cell ${errorTone(r.errorMW)}`}>{r.errorMW == null ? '—' : `${r.errorMW > 0 ? '+' : ''}${fmtNum(r.errorMW)}`}</td><td className="publish-cell">{r.publishTime ? shortTime(r.publishTime) : 'No eligible vintage'}</td></tr>)}
              {!loading && !dayRows.length && <tr><td colSpan={8} className="empty-table">No hourly evaluation intervals are available.</td></tr>}
           </tbody></table></div>
           <div className="table-footer"><span><span className="table-foot-dot"/> Latest eligible publication chosen separately for each hourly interval</span><button onClick={exportCsv} disabled={!data || !dayRows.length}><Download size={13}/> Download selected day</button></div>
+        </section>
+
+        <section className="provenance" aria-label="Data provenance">
+          <div className="provenance-heading"><div><div className="prov-kicker">Source provenance</div><h2>Every figure traces back to a run.</h2></div><p>Source status, record counts and the run fingerprint returned by the analysis API.</p></div>
+          <div className="prov-grid">
+            <div><span>Run identity</span><p>Run <b>{data?.meta.analysisRunId ?? '—'}</b></p><p>SHA-256 <b>{data ? data.meta.dataSha256.slice(0, 16) : '—'}</b></p></div>
+            <div><span>Source state</span><p><b>{loading ? 'CONNECTING' : sourceLabel}</b></p><p>Last fetch <b>{data?.meta.fetchedAt ? fmtTime(data.meta.fetchedAt) : 'None recorded'}</b></p></div>
+            <div><span>Records used</span><p>Actual <b>{fmtNum(data?.meta.actualRecords)}</b></p><p>Forecast <b>{fmtNum(data?.meta.forecastRecords)}</b></p></div>
+            <div><span>Hourly coverage</span><p>Matched <b>{fmtNum(data?.meta.matchedPeriods)}</b> of <b>{fmtNum(data?.meta.expectedDecisionPeriods)}</b></p><p>Warm-up days <b>{fmtNum(data?.meta.warmupDecisionDays)}</b></p></div>
+            <div><span>Source cadence</span><p>WINDFOR <b>{data ? `${fmtNum(data.meta.sourceForecastResolutionMinutes)} min` : '—'}</b></p><p>FUELHH <b>{data ? `${fmtNum(data.meta.sourceActualResolutionMinutes)} min` : '—'}</b></p></div>
+          </div>
         </section>
 
         {showMethodology && <section className="panel methodology-panel"><div className="panel-header"><div><div className="panel-kicker">REPRODUCIBILITY</div><h2>Methodology & interpretation</h2></div><button className="close-method" onClick={() => setShowMethodology(false)}>Close</button></div><div className="method-grid"><div><strong>1. Decision-time vintage</strong><p>For each hourly delivery interval, use the latest WINDFOR record published at or before the selected Europe/London cut-off on the preceding decision date. Later revisions are excluded from that decision vintage.</p></div><div><strong>2. Actual alignment</strong><p>WINDFOR startTime is the hourly delivery-interval start and publishTime is the vintage timestamp. Compare it with the mean MW from both FUELHH WIND half-hours starting within that hour; reject an incomplete pair.</p></div><div><strong>3. Error definitions</strong><p>Error = forecast − actual. Positive bias means average over-forecast; negative bias means average under-forecast. MAE is the mean absolute MW error; RMSE weights larger misses more heavily; WAPE divides total absolute error by total actual generation.</p></div><div><strong>4. Rolling calibration</strong><p>For a decision on day d, the trailing error calibration includes only delivery dates strictly before d. A minimum of five completed days is required. The shortfall buffer is the empirical P90 of positive forecast-minus-actual error, not P90 absolute error.</p></div><div><strong>5. Scope boundary</strong><p>This January 2026 decision analysis covers delivery dates 2 January through 1 February. No demand, price, thermal availability or other generation datasets are used. The cut-off is a configurable assumption, not a claimed market gate closure.</p></div><div><strong>6. Reproducibility</strong><p>The API returns an analysis run ID and SHA-256 data fingerprint, source state, fetch timestamp, record counts, and explicit warnings. Cached and synthetic records are visibly distinguished from live data.</p></div></div></section>}
