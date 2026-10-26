@@ -110,6 +110,8 @@ class LedgerRowResponse(BaseModel):
     intervalIndex: int
     resolutionMinutes: int
     actualMW: float | None
+    actualHalfHour00MW: float | None
+    actualHalfHour30MW: float | None
     forecastMW: float | None
     errorMW: float | None
     actualMinusForecastMW: float | None
@@ -607,6 +609,7 @@ def build_decision_rows(
     warmup_start = decision_start - timedelta(days=WARMUP_DAYS + 1)
     delivery_start = datetime.combine(warmup_start + timedelta(days=1), dt_time.min, tzinfo=LONDON).astimezone(UTC)
     delivery_end = datetime.combine(decision_end + timedelta(days=1), dt_time.min, tzinfo=LONDON).astimezone(UTC)
+    half_hour_actuals = normalize_actuals(actual_raw, delivery_start, delivery_end)
     actuals = normalize_hourly_actuals(actual_raw, delivery_start, delivery_end)
     forecasts = normalize_forecasts(forecast_raw, delivery_start, delivery_end)
     by_target: dict[str, list[dict[str, Any]]] = {}
@@ -628,6 +631,8 @@ def build_decision_rows(
             candidates = [record for record in by_target.get(key, []) if record["published"] <= cutoff_utc]
             selected = candidates[-1] if candidates else None
             actual = actuals.get(key)
+            actual_half_hour_00 = half_hour_actuals.get(key)
+            actual_half_hour_30 = half_hour_actuals.get(iso_utc(target_utc + timedelta(minutes=30)))
             forecast_value = selected["generation"] if selected else None
             error = forecast_value - actual if forecast_value is not None and actual is not None else None
             residual = actual - forecast_value if forecast_value is not None and actual is not None else None
@@ -640,6 +645,8 @@ def build_decision_rows(
                 "intervalIndex": interval_index + 1,
                 "resolutionMinutes": EVALUATION_INTERVAL_MINUTES,
                 "actualMW": round(actual, 2) if actual is not None else None,
+                "actualHalfHour00MW": round(actual_half_hour_00, 2) if actual_half_hour_00 is not None else None,
+                "actualHalfHour30MW": round(actual_half_hour_30, 2) if actual_half_hour_30 is not None else None,
                 "forecastMW": round(forecast_value, 2) if forecast_value is not None else None,
                 "errorMW": round(error, 2) if error is not None else None,
                 "actualMinusForecastMW": round(residual, 2) if residual is not None else None,

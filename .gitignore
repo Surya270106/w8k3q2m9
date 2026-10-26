@@ -4,6 +4,8 @@ frontend/dist/
 frontend/.pnpm-store/
 frontend/tsconfig.tsbuildinfo
 .verification-packages/
+.verify-run/
+.verify-clean/
 .pytest-tmp/
 .venv/
 __pycache__/

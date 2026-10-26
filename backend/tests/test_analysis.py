@@ -148,6 +148,8 @@ def test_decision_alignment_selects_latest_vintage_at_or_before_cutoff():
     selected = next(item for item in rows if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 1)
     assert selected["deliveryDate"] == "2026-01-02"
     assert selected["actualMW"] == 110
+    assert selected["actualHalfHour00MW"] == 100
+    assert selected["actualHalfHour30MW"] == 120
     assert selected["forecastMW"] == 120
     assert selected["publishTime"] == "2026-01-01T09:00:00Z"
     assert selected["errorMW"] == 10
@@ -185,6 +187,8 @@ def test_missing_half_hour_pair_remains_missing_in_hourly_expected_denominator()
     hour = next(item for item in rows if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 13)
     assert hour["forecastMW"] == 110
     assert hour["actualMW"] is None
+    assert hour["actualHalfHour00MW"] == 100
+    assert hour["actualHalfHour30MW"] is None
     metrics = api.metric_block([row for row in rows if row["decisionDate"] == "2026-01-01"])
     assert metrics["expectedPeriods"] == 24
     assert metrics["matchedPeriods"] == 23
@@ -358,17 +362,53 @@ def test_actual_normalization_rejects_missing_fuel_type():
     assert result == {}
 
 def test_health_endpoint_is_available_without_upstream_network():
-    client = TestClient(api.app)
-    response = client.get("/api/health")
+    with TestClient(api.app) as client:
+        response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
 def test_readiness_endpoint_does_not_claim_live_data():
-    client = TestClient(api.app)
-    response = client.get("/api/ready")
+    with TestClient(api.app) as client:
+        response = client.get("/api/ready")
     assert response.status_code == 200
     assert response.json() == {"status": "ready", "service": "winddesk"}
+
+
+def test_analysis_http_endpoint_rejects_unsupported_month():
+    with TestClient(api.app) as client:
+        response = client.get("/api/analysis?month=2026-02")
+    assert response.status_code == 400
+    assert "January 2026" in response.json()["detail"]
+
+
+def test_analysis_http_endpoint_returns_upstream_error_without_demo_fallback(monkeypatch):
+    def fail_load(**_kwargs):
+        raise api.HTTPException(status_code=502, detail="controlled source failure")
+    monkeypatch.setattr(api, "load_records", fail_load)
+    with TestClient(api.app) as client:
+        response = client.get("/api/analysis?refresh=true&demo=false")
+    assert response.status_code == 502
+    assert response.json() == {"detail": "controlled source failure"}
+
+
+def test_demo_analysis_http_endpoint_is_explicit_and_response_validated(monkeypatch):
+    def fail_live(*_args, **_kwargs):
+        raise AssertionError("demo=true must not call a live Elexon endpoint")
+    monkeypatch.setattr(api, "fetch_actuals", fail_live)
+    monkeypatch.setattr(api, "fetch_forecasts", fail_live)
+    with TestClient(api.app) as client:
+        response = client.get("/api/analysis?demo=true")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "demo"
+    assert payload["status"] == "demo"
+    assert payload["meta"]["fetchedAt"] is None
+    assert any("Synthetic demo mode" in warning for warning in payload["warnings"])
+    row = next(item for item in payload["rows"] if item["decisionDate"] == "2026-01-01" and item["intervalIndex"] == 13)
+    assert row["actualHalfHour00MW"] is not None
+    assert row["actualHalfHour30MW"] is not None
+    assert row["actualMW"] == round((row["actualHalfHour00MW"] + row["actualHalfHour30MW"]) / 2, 2)
 
 
 def test_explicit_demo_analysis_endpoint_does_not_call_live_api(monkeypatch):
@@ -380,3 +420,13 @@ def test_explicit_demo_analysis_endpoint_does_not_call_live_api(monkeypatch):
     response = api.analysis(month="2026-01", cutoff="09:00", refresh=False, demo=True)
     assert response["source"] == "demo"
     assert response["status"] == "demo"
+
+
+def test_analysis_response_schema_exposes_constituent_actuals():
+    actuals, forecasts = api.demo_data(date(2025, 12, 17), date(2026, 2, 1))
+    payload = api.analysis_payload(actuals, forecasts, "demo", ["synthetic"], None, "09:00")
+    response = api.AnalysisResponse.model_validate(payload)
+    row = next(item for item in response.rows if item.decisionDate == "2026-01-01" and item.intervalIndex == 13)
+    assert row.actualHalfHour00MW is not None
+    assert row.actualHalfHour30MW is not None
+    assert row.actualMW == round((row.actualHalfHour00MW + row.actualHalfHour30MW) / 2, 2)

@@ -5,6 +5,8 @@ venv
 **/venv
 __pycache__
 .verification-packages
+.verify-run
+.verify-clean
 **/.verification-packages
 .pytest_cache
 .pytest-tmp

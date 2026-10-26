@@ -19,7 +19,8 @@ type Metrics = {
 }
 type Point = {
   startTime: string; deliveryDate: string; decisionDate: string; intervalIndex: number; resolutionMinutes: number;
-  actualMW: number | null; forecastMW: number | null; errorMW: number | null;
+  actualMW: number | null; actualHalfHour00MW?: number | null; actualHalfHour30MW?: number | null;
+  forecastMW: number | null; errorMW: number | null;
   actualMinusForecastMW?: number | null; absoluteErrorMW: number | null; percentageError: number | null;
   publishTime: string | null; forecastLeadHours?: number | null; decisionLeadHours?: number | null;
   intervalLowMW?: number | null; intervalHighMW?: number | null;
@@ -106,7 +107,7 @@ function App() {
   const refreshData = () => { forceRefreshRef.current = true; setRefreshing(true); setRefreshToken(v => v + 1) }
   const exportCsv = () => {
     if (!data) return
-    const header = ['startTime','decisionDate','deliveryDate','intervalIndex','resolutionMinutes','forecastMW','actualMW','errorMW','percentageError','publishTime','forecastLeadHours','intervalLowMW','intervalHighMW','source','cutoff','evaluationResolutionMinutes','sourceActualHalfHourlyPeriods','expectedSourceActualHalfHourlyPeriods','analysisRunId','dataSha256','generatedAt']
+    const header = ['startTime','decisionDate','deliveryDate','intervalIndex','resolutionMinutes','forecastMW','actualHalfHour00MW','actualHalfHour30MW','actualMW','errorMW','percentageError','publishTime','forecastLeadHours','intervalLowMW','intervalHighMW','source','cutoff','evaluationResolutionMinutes','sourceActualHalfHourlyPeriods','expectedSourceActualHalfHourlyPeriods','analysisRunId','dataSha256','generatedAt']
     const rows = dayRows.map(r => {
       const record = r as unknown as Record<string, unknown>
       const audit: Record<string, unknown> = { source: data.source, cutoff: data.scope.cutoff, analysisRunId: data.meta.analysisRunId, dataSha256: data.meta.dataSha256, generatedAt: data.generatedAt }
@@ -288,10 +289,10 @@ function App() {
         </section>
 
         <section className="panel table-panel" id="period-table">
-          <div className="panel-header table-head"><div><div className="panel-kicker">AUDITABLE DETAIL</div><h2>Hourly interval ledger</h2><p>Forecast vintage, actual outturn, error, forecast lead time and publication time for the selected decision.</p></div><div className="table-count"><span>{dayRows.length} rows</span><span className="table-sep"/><span>60-min resolution</span></div></div>
-          <div className="table-scroll"><table><thead><tr><th>HOUR</th><th>DELIVERY TIME</th><th>FORECAST <small>MW</small></th><th>ACTUAL <small>MW</small></th><th>ERROR <small>MW</small></th><th>ERROR <small>%</small></th><th>PUBLISHED AT</th></tr></thead><tbody>
-            {dayRows.slice(0, 24).map(r => <tr key={r.startTime}><td><span className="period-chip">H {String(r.intervalIndex).padStart(2,'0')}</span></td><td className="time-cell">{shortTime(r.startTime)}</td><td className="number-cell forecast-number">{fmtNum(r.forecastMW)}</td><td className="number-cell">{fmtNum(r.actualMW)}</td><td className={`number-cell ${errorTone(r.errorMW)}`}>{r.errorMW == null ? '—' : `${r.errorMW > 0 ? '+' : ''}${fmtNum(r.errorMW)}`}</td><td className={`number-cell ${errorTone(r.percentageError)}`}>{r.percentageError == null ? '—' : `${r.percentageError > 0 ? '+' : ''}${fmtNum(r.percentageError,1)}%`}</td><td className="publish-cell">{r.publishTime ? shortTime(r.publishTime) : 'No eligible vintage'}</td></tr>)}
-            {!loading && !dayRows.length && <tr><td colSpan={7} className="empty-table">No hourly evaluation intervals are available.</td></tr>}
+          <div className="panel-header table-head"><div><div className="panel-kicker">AUDITABLE DETAIL</div><h2>Hourly interval ledger</h2><p>Each hourly actual is the mean of its two half-hour FUELHH readings; missing readings stay visible.</p></div><div className="table-count"><span>{dayRows.length} rows</span><span className="table-sep"/><span>60-min comparison</span></div></div>
+           <div className="table-scroll"><table><thead><tr><th>HOUR</th><th>DELIVERY TIME</th><th>FORECAST <small>MW</small></th><th>ACTUAL :00 <small>MW</small></th><th>ACTUAL :30 <small>MW</small></th><th>HOURLY MEAN <small>MW</small></th><th>ERROR <small>MW</small></th><th>PUBLISHED AT</th></tr></thead><tbody>
+             {dayRows.slice(0, 24).map(r => <tr key={r.startTime}><td><span className="period-chip">H {String(r.intervalIndex).padStart(2,'0')}</span></td><td className="time-cell">{shortTime(r.startTime)}</td><td className="number-cell forecast-number">{fmtNum(r.forecastMW)}</td><td className="number-cell">{fmtNum(r.actualHalfHour00MW)}</td><td className="number-cell">{fmtNum(r.actualHalfHour30MW)}</td><td className="number-cell">{fmtNum(r.actualMW)}</td><td className={`number-cell ${errorTone(r.errorMW)}`}>{r.errorMW == null ? '—' : `${r.errorMW > 0 ? '+' : ''}${fmtNum(r.errorMW)}`}</td><td className="publish-cell">{r.publishTime ? shortTime(r.publishTime) : 'No eligible vintage'}</td></tr>)}
+             {!loading && !dayRows.length && <tr><td colSpan={8} className="empty-table">No hourly evaluation intervals are available.</td></tr>}
           </tbody></table></div>
           <div className="table-footer"><span><span className="table-foot-dot"/> Latest eligible publication chosen separately for each hourly interval</span><button onClick={exportCsv} disabled={!data || !dayRows.length}><Download size={13}/> Download selected day</button></div>
         </section>
