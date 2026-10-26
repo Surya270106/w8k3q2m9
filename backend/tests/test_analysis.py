@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import math
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 from app import main as api
@@ -64,6 +66,65 @@ def test_scope_only_allows_january_2026_decision_dates():
         api.month_window("2026-02")
 
 
+@pytest.mark.parametrize("timestamp", ["2026-01-02T00:00:00", "2026-01-02T00:00:00+25:00", "not-a-timestamp"])
+def test_parse_datetime_rejects_naive_and_malformed_source_timestamps(timestamp):
+    assert api.parse_dt(timestamp) is None
+
+
+def test_parse_datetime_normalizes_explicit_timezone_offsets_to_utc():
+    assert api.parse_dt("2026-01-02T01:00:00+01:00") == datetime(2026, 1, 2, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("status,expected_attempts", [(400, 1), (401, 1), (403, 1), (404, 1), (429, 3), (500, 3), (503, 3)])
+def test_fetch_json_retries_only_throttling_or_server_statuses(monkeypatch, status, expected_attempts):
+    calls = []
+
+    class StubClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def get(self, url, params):
+            calls.append((url, params))
+            request = httpx.Request("GET", url)
+            response = httpx.Response(status, request=request)
+            raise httpx.HTTPStatusError("controlled", request=request, response=response)
+
+    monkeypatch.setattr(api.httpx, "Client", StubClient)
+    monkeypatch.setattr(api.time, "sleep", lambda _delay: None)
+    with pytest.raises(RuntimeError):
+        api.fetch_json("https://example.invalid/datasets/WINDFOR/stream", {}, attempts=3)
+    assert len(calls) == expected_attempts
+
+
+def test_fetch_json_accepts_empty_array_and_retries_truncated_json(monkeypatch):
+    calls = []
+    responses = [[], ValueError("truncated JSON"), ValueError("truncated JSON"), ValueError("truncated JSON")]
+
+    class StubClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def get(self, url, params):
+            calls.append(url)
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                class BrokenResponse:
+                    def raise_for_status(self): return None
+                    def json(self): raise result
+                return BrokenResponse()
+            class GoodResponse:
+                def raise_for_status(self): return None
+                def json(self): return result
+            return GoodResponse()
+
+    monkeypatch.setattr(api.httpx, "Client", StubClient)
+    monkeypatch.setattr(api.time, "sleep", lambda _delay: None)
+    assert api.fetch_json("https://example.invalid/datasets/FUELHH/stream", {}) == []
+    with pytest.raises(RuntimeError, match="truncated JSON"):
+        api.fetch_json("https://example.invalid/datasets/FUELHH/stream", {})
+    assert len(calls) == 4
+
+
 def test_actual_normalization_keeps_wind_only():
     records = [
         {"startTime": "2026-01-02T00:00:00Z", "fuelType": "WIND", "generation": 120},
@@ -90,6 +151,20 @@ def test_fuelhh_settlement_date_and_period_validate_start_time():
     ]
     result = api.normalize_actuals(records, datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
     assert result == {"2026-01-02T12:00:00Z": 100, "2026-01-02T12:30:00Z": 120}
+
+
+@pytest.mark.parametrize("settlement_date,period,start_time", [
+    ("2026-03-29", 3, "2026-03-29T01:00:00Z"),  # spring-forward: first interval after the skipped hour
+    ("2026-10-25", 3, "2026-10-25T00:00:00Z"),  # first 01:00, still BST
+    ("2026-10-25", 5, "2026-10-25T01:00:00Z"),  # repeated 01:00, now GMT
+])
+def test_fuelhh_settlement_periods_follow_utc_interval_sequence_across_dst(settlement_date, period, start_time):
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = datetime(2027, 1, 1, tzinfo=UTC)
+    records = [{"startTime": start_time, "settlementDate": settlement_date,
+                "settlementPeriod": period, "fuelType": "WIND", "generation": 123}]
+    normalized = api.normalize_actuals(records, start, end)
+    assert normalized == {api.iso_utc(api.parse_dt(start_time)): 123}
 
 
 def test_hourly_actual_normalization_averages_1200_and_1230_only_as_a_pair():
@@ -120,6 +195,30 @@ def test_forecast_normalization_deduplicates_same_vintage():
     normalized = api.normalize_forecasts(raw, datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
     assert len(normalized) == 1
     assert normalized[0]["generation"] == 80
+
+
+def test_forecast_normalization_rejects_naive_publication_and_delivery_timestamps():
+    bounds = (datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC))
+    rows = [
+        {"startTime": "2026-01-02T00:00:00Z", "publishTime": "2026-01-01T09:00:00", "generation": 100},
+        {"startTime": "2026-01-02T00:00:00", "publishTime": "2026-01-01T09:00:00Z", "generation": 100},
+    ]
+    assert api.normalize_forecasts(rows, *bounds) == []
+
+
+def test_source_normalization_drops_null_missing_non_numeric_nan_and_infinite_values():
+    actual_start = datetime(2026, 1, 2, tzinfo=UTC)
+    bounds = (actual_start, actual_start + timedelta(days=1))
+    records = [
+        {"startTime": api.iso_utc(actual_start + timedelta(minutes=30*i)), "fuelType": "WIND", "generation": value}
+        for i, value in enumerate([None, "not-number", "NaN", "Infinity", "-Infinity"])
+    ]
+    assert api.normalize_actuals(records, *bounds) == {}
+    forecasts = [
+        {"startTime": api.iso_utc(actual_start), "publishTime": f"2026-01-01T0{i}:00:00Z", "generation": value}
+        for i, value in enumerate([None, "not-number", "NaN", "Infinity", "-Infinity"])
+    ]
+    assert api.normalize_forecasts(forecasts, *bounds) == []
 
 
 def test_conflicting_duplicate_vintage_is_independent_of_input_order():
@@ -218,6 +317,52 @@ def test_metrics_use_forecast_minus_actual_sign_convention():
     assert metrics["biasMW"] == 0
     assert metrics["wapePct"] == pytest.approx(40 / 300 * 100, abs=0.001)
     assert metrics["overforecastPct"] == 50
+
+
+def test_metric_definitions_match_hand_calculated_fixture():
+    rows = [
+        {"actualMW": 100.0, "forecastMW": 102.0, "errorMW": 2.0, "forecastLeadHours": 6.0},
+        {"actualMW": 200.0, "forecastMW": 198.0, "errorMW": -2.0, "forecastLeadHours": 12.0},
+        {"actualMW": 50.0, "forecastMW": 50.0, "errorMW": 0.0, "forecastLeadHours": 18.0},
+        {"actualMW": 0.0, "forecastMW": 4.0, "errorMW": 4.0, "forecastLeadHours": 24.0},
+    ]
+    metrics = api.metric_block(rows)
+    assert metrics["maeMW"] == 2.0
+    assert metrics["rmseMW"] == pytest.approx(6 ** 0.5, abs=0.01)  # public metric is rounded to 2 decimals
+    assert metrics["biasMW"] == 1.0
+    assert metrics["wapePct"] == pytest.approx(8 / 350 * 100, abs=0.001)
+    assert metrics["mapePct"] == pytest.approx(1.5)
+    assert metrics["mapeEligiblePeriods"] == 2
+    assert metrics["p90AbsErrorMW"] == pytest.approx(3.4)
+    assert metrics["p95AbsErrorMW"] == pytest.approx(3.7)
+    assert metrics["p90OverforecastMW"] == pytest.approx(3.4)
+    assert metrics["overforecastPct"] == 50.0
+    assert metrics["overforecastMeanMW"] == 3.0
+    assert api.build_horizon_metrics(rows)[0]["count"] == 1
+    assert api.build_horizon_metrics(rows)[1]["count"] == 1
+
+
+def test_metric_block_empty_zero_total_and_single_observation_are_explicit():
+    empty = api.metric_block([])
+    assert empty["matchedPeriods"] == 0
+    assert empty["maeMW"] is None
+    assert empty["wapePct"] is None
+    zero_actual = api.metric_block([{"actualMW": 0.0, "forecastMW": 0.0, "errorMW": 0.0}])
+    assert zero_actual["wapePct"] is None
+    assert zero_actual["mapePct"] is None
+    assert zero_actual["p90AbsErrorMW"] == 0.0
+    single = api.metric_block([{"actualMW": 100.0, "forecastMW": 125.0, "errorMW": 25.0}])
+    assert single["maeMW"] == single["rmseMW"] == single["biasMW"] == 25.0
+    assert single["p90AbsErrorMW"] == single["p95AbsErrorMW"] == single["p90OverforecastMW"] == 25.0
+
+
+def test_metric_block_large_finite_errors_do_not_overflow_rmse_to_infinity():
+    metrics = api.metric_block([
+        {"actualMW": 0.0, "forecastMW": 1e200, "errorMW": 1e200},
+        {"actualMW": 0.0, "forecastMW": -1e200, "errorMW": -1e200},
+    ])
+    assert metrics["rmseMW"] == pytest.approx(1e200)
+    assert math.isfinite(metrics["rmseMW"])
 
 
 def test_p90_overforecast_is_not_p90_absolute_error():

@@ -186,7 +186,9 @@ def parse_dt(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
+            # Elexon date-time fields are RFC 3339 instants. Assigning UTC to a
+            # naive value would invent timezone information and can shift joins.
+            return None
         return parsed.astimezone(UTC)
     except (TypeError, ValueError):
         return None
@@ -268,6 +270,10 @@ def fetch_json(url: str, params: dict[str, str], *, attempts: int = 3) -> list[d
                 return as_records(response.json())
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
+            if isinstance(exc, httpx.HTTPStatusError):
+                status = exc.response.status_code
+                if status != 429 and status < 500:
+                    break
             if attempt + 1 < attempts:
                 # Respect upstream rate-limit guidance when provided; otherwise back off.
                 retry_after = None
@@ -385,9 +391,12 @@ def normalize_actuals(records: list[dict[str, Any]], start: datetime, end: datet
         if settlement_date is not None and settlement_period is not None:
             try:
                 period = int(settlement_period)
-                local_midnight = datetime.combine(date.fromisoformat(str(settlement_date)), dt_time.min, tzinfo=LONDON)
-                expected_start = (local_midnight + timedelta(minutes=FUELHH_INTERVAL_MINUTES * (period - 1))).astimezone(UTC)
-                if period < 1 or target != expected_start:
+                local_day = date.fromisoformat(str(settlement_date))
+                local_midnight = datetime.combine(local_day, dt_time.min, tzinfo=LONDON).astimezone(UTC)
+                next_midnight = datetime.combine(local_day + timedelta(days=1), dt_time.min, tzinfo=LONDON).astimezone(UTC)
+                periods_in_day = int((next_midnight - local_midnight).total_seconds() // (FUELHH_INTERVAL_MINUTES * 60))
+                expected_start = local_midnight + timedelta(minutes=FUELHH_INTERVAL_MINUTES * (period - 1))
+                if period < 1 or period > periods_in_day or target != expected_start:
                     continue
             except (TypeError, ValueError, OverflowError):
                 continue
@@ -688,9 +697,11 @@ def metric_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
     abs_sum = sum(absolute)
     mape_items = [(abs(float(row["errorMW"])) / float(row["actualMW"])) * 100 for row in matched if float(row["actualMW"]) >= 100]
     positive = [value for value in errors if value > 0]
+    error_scale = max((abs(value) for value in errors), default=0.0)
+    rmse = error_scale * math.sqrt(sum((value / error_scale) ** 2 for value in errors) / len(errors)) if error_scale else 0.0
     return {
         "maeMW": round(sum(absolute) / len(absolute), 2),
-        "rmseMW": round(math.sqrt(sum(value * value for value in errors) / len(errors)), 2),
+        "rmseMW": round(rmse, 2),
         "biasMW": round(sum(errors) / len(errors), 2),  # forecast - actual; positive means over-forecast
         "wapePct": round(abs_sum / total_actual * 100, 3) if total_actual > 0 else None,
         "mapePct": round(sum(mape_items) / len(mape_items), 3) if mape_items else None,
