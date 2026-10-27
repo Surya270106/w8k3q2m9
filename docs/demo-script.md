@@ -1,6 +1,6 @@
 # Reviewer video script (maximum 10 minutes)
 
-This is a recording outline, not a claim that a public app or video exists. No public deployment has been verified yet. After deployment, open the app in a private browser window and use only the state and counts shown by that run. The saved January source audit reports 744/744 matched hourly intervals from 1,488/1,488 half-hour actual readings; quote these counts only if the current source badge is `LIVE` and the visible counts agree. Otherwise state the current source label and counts, including cache or demo warnings.
+This is a recording outline, not a claim that a video exists. The public Vercel frontend and Render backend/API endpoints returned unauthenticated HTTP 200 on 27 October 2026, and the user separately confirmed the submitted links open in a private/incognito window. The hosted analysis APIs reported live Elexon source status with 744/744 hourly matches and 1,488/1,488 half-hour actuals at the time checked. These are point-in-time API checks, not a visual browser audit or idle/cold-start verification. During recording, open the app and quote only the live state and counts actually visible then. The saved January source audit reports 744/744 matched hourly intervals from 1,488/1,488 half-hour actual readings; quote these counts only if the current source badge is `LIVE` and the visible counts agree. Otherwise state the current source label and counts, including cache or demo warnings.
 
 ## Part 1: Customer pitch (0:00-4:45)
 
@@ -32,7 +32,7 @@ Summarize the decision record and its limits: no demand, prices, thermal availab
 
 ### 4:45-5:30: Architecture
 
-Show the React dashboard, FastAPI service, Compose configuration and root single-container Dockerfile. Explain that Compose is a split Nginx/API topology; the root image runs the built frontend through FastAPI.
+Show the React dashboard and FastAPI service. The deployed topology is Vercel for the frontend and Render for the API; Vercel rewrites `/api/*` to Render. The local Compose option uses Nginx on port 8080 to proxy to FastAPI on port 8000; the root single-container image builds React and serves it through FastAPI. Both Docker paths were built and exercised locally on 27 October 2026.
 
 ### 5:30-6:35: Data contract
 
@@ -48,7 +48,7 @@ Review forecast-minus-actual sign convention, MAE/RMSE/WAPE, MAPE eligibility, r
 
 ### 8:30-9:15: Tests and edge cases
 
-Run `python -m pytest -q` and `npm run build --workspace frontend`. Describe checks for distinct :00 and :30 periods, forecast vintages, timezone offsets, duplicates, missing periods, exact cutoff selection and prior-only calibration.
+Show the successful CI run for the current source commit and report the local backend result (53 passed, 0 failed, 0 skipped, with one upstream deprecation warning). TypeScript and the Vite production build passed in CI and in the root Docker build. The host shell lacked `npm`, so do not say the host command ran. Describe regression checks for distinct :00 and :30 periods, forecast vintages, timezone offsets, duplicates, missing periods, exact cutoff selection and prior-only calibration.
 
 ### 9:15-9:45: Limits and handoff
 
@@ -58,7 +58,7 @@ Stop before 10 minutes.
 
 ## Recording checklist
 
-1. Confirm anonymous access to the verified public repository and deployed app before including their URLs.
+1. Confirm anonymous access to the public repository and deployed app before including their URLs; endpoint HTTP checks passed on 27 October, but this was not a visual README/Mermaid browser review.
 2. Capture the actual source badge, fetch timestamp, warnings, run ID, matched count, expected count and missing count.
 3. Show decision date, cutoff, delivery date and publication timestamps.
 4. Show both half-hour readings and their hourly mean. If an incomplete pair is present, show that it remains missing; never imply missing data was filled.

@@ -17,10 +17,10 @@
 | Public source | [GitHub repository](https://github.com/Surya270106/w8k3q2m9) |
 | Frontend | [Vercel deployment](https://w8k3q2m9.vercel.app/) |
 | Backend | [Render service](https://w8k3q2m9.onrender.com/) |
-| Previously reported backend verification | 53 tests passed, 0 failed, 0 skipped; one upstream Starlette/AnyIO deprecation warning |
-| Frontend verification | TypeScript check and Vite production build passed in the reported local run |
-| Previously verified Elexon sample | 744/744 hourly intervals matched; 1,488/1,488 source half-hour readings; live source reported in the local integration run on 26 October 2026 |
-| Docker runtime | Dockerfiles and Compose configuration are included; container execution has not been verified in the available environment |
+| Backend tests | 53 passed, 0 failed, 0 skipped using the bundled Python runtime and the existing temporary verification dependency directory; one upstream Starlette/AnyIO deprecation warning |
+| Frontend verification | TypeScript check and production build passed in GitHub Actions for commit `b25dcb6`; the root Docker build also completed the frontend build successfully. Host `npm` was unavailable in this shell. |
+| Hosted Elexon sample | At the 27 October 2026 check, both hosted analysis endpoints reported live source, 744/744 hourly matches and 1,488/1,488 half-hour actuals. This is a point-in-time observation, not a future availability guarantee. |
+| Docker runtime | Compose frontend/API stack and the standalone root image were built and run locally; health, readiness, frontend, analysis and live-source responses were verified. The Compose stack and smoke container were stopped afterward. |
 | Full browser QA | Core navigation, decision controls, demo toggle, refresh, daily chart selections and methodology panel were exercised manually. CSV contents, keyboard accessibility, responsive layouts and all error states have not been fully verified. |
 | Submission video and form | Not completed at the time this README was prepared |
 
@@ -114,7 +114,7 @@ flowchart LR
     end
 ```
 
-Docker configuration is included, but a Docker image build and container runtime test have not been verified in the available environment.
+Docker was verified locally on 27 October 2026: the Compose stack and standalone root image both built and ran. The Compose frontend/API path and the standalone app served the frontend and API; health and readiness succeeded, and analysis returned live Elexon data (744/744 hourly matches and 1,488/1,488 half-hour actuals) during these runs.
 
 ## Features
 
@@ -278,9 +278,9 @@ npm ci
 npm run build
 ```
 
-The frontend build runs the TypeScript project check and Vite production build. The previously reported build emitted a bundle-size advisory for a 595.24 kB minified main JavaScript chunk (168.41 kB gzip). This warning was documented rather than addressed with an unverified code split.
+The frontend build runs the TypeScript project check and Vite production build. The latest verified output split Recharts and D3 into separate chunks; the largest JavaScript chunk was 486.73 kB (135.23 kB gzip), and Vite emitted no chunk-size advisory. The host shell did not expose `npm`; the exact frontend build succeeded inside the root Docker build and in GitHub Actions for the current commit. npm install emitted an upstream Recharts 2.15.4 deprecation notice.
 
-The previously reported local backend suite passed 53 tests with no failures or skips and one upstream Starlette/AnyIO deprecation warning. Results can vary with later code changes; rerun the commands above before submitting.
+The latest local backend suite passed 53 tests with no failures or skips and one upstream Starlette/AnyIO deprecation warning. It ran with the bundled Python 3.12 runtime and the existing temporary `.verification-packages` dependency directory, which is outside the published project. GitHub Actions also passed both backend tests and frontend build for commit `b25dcb614f796e3cc46dc51c549919fac7d60ef5` (run [40350609025](https://github.com/Surya270106/w8k3q2m9/actions/runs/40350609025)).
 
 ## API endpoints
 
@@ -323,7 +323,7 @@ The health endpoint is a liveness check. Validate `/api/analysis` and inspect th
 
 ### Container deployment options
 
-The root `Dockerfile` builds the React bundle and runs FastAPI in one container. `docker-compose.yml` instead runs separate API and Nginx services. The repository also includes a `heroku.yml` for a single-container Heroku path. These configurations are provided, but Docker runtime verification was not completed in the environment used for the reported checks.
+The root `Dockerfile` builds the React bundle and runs FastAPI in one container. `docker-compose.yml` instead runs separate API and Nginx services. The repository also includes a `heroku.yml` for a single-container Heroku path. Both Docker paths were built and exercised locally on 27 October 2026. See the project status table above for the tested endpoints and source state.
 
 On platforms with ephemeral filesystems, cached snapshots may be lost after restart or redeployment. Use persistent storage or external object storage before relying on caching as durable infrastructure.
 
@@ -335,8 +335,8 @@ On platforms with ephemeral filesystems, cached snapshots may be lost after rest
 - Forecast uncertainty is empirical. Its interval coverage is not guaranteed to match the nominal rate in future data.
 - The calibration window is pooled and not conditioned by hour of day or lead-time bucket; lead-time charts are diagnostics, not a conditional probabilistic model.
 - Live API availability and source completeness can change. Coverage and source status must be checked on every run.
-- Docker build/runtime, full browser responsive/accessibility checks, and saved CSV content inspection were not verified as part of the last reported verification pass.
-- The Vite bundle-size advisory remains. It has not been hidden with an unverified optimization.
+- Full browser responsive/accessibility checks and saved CSV content inspection remain outside the Docker verification performed on 27 October 2026; see the submission checklist for outstanding release tasks.
+- The latest verified Vite build emitted no chunk-size advisory after the existing chart dependencies were split. npm did report an upstream Recharts 2.15.4 deprecation notice during Docker installation.
 
 ## AI-tool disclosure
 

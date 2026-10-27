@@ -1,6 +1,6 @@
 # WindDesk — submission and release checklist
 
-Updated 26 October 2026.
+Updated 27 October 2026.
 
 This checklist distinguishes repository/source review from checks that still need to be run against the exact public release. A page loading successfully does not by itself prove that its API fetched live Elexon data.
 
@@ -10,8 +10,8 @@ This checklist distinguishes repository/source review from checks that still nee
 - [x] Frontend deployment configured at [Vercel](https://w8k3q2m9.vercel.app/).
 - [x] Python API deployment configured at [Render](https://w8k3q2m9.onrender.com/).
 - [x] Root `vercel.json` rewrites `/api/*` requests to the Render API.
-- [ ] Verify both deployments and the API anonymously in a private/incognito window (see the exact endpoints below).
-- [ ] Confirm the hosted API returns live Elexon data after an idle/cold start, not a synthetic demo fallback.
+- [x] Verify unauthenticated HTTP access to the frontend and health, readiness and analysis endpoints on both Vercel and Render (URLs below). The user also confirmed private/incognito access; this records endpoint reachability, not a private-browser visual audit.
+- [ ] Recheck live Elexon state after an idle/cold start. The 27 October point-in-time requests returned live data; this was not a cold-start test.
 
 **Deployment disclosure:** this is a split deployment: Vercel hosts the React frontend and Render hosts the FastAPI backend. The README describes this topology. Do not claim the Python API is hosted on Vercel or Heroku.
 
@@ -36,30 +36,30 @@ WindDesk fetches prior delivery days so that early-January decisions can have an
 
 | Check | Current evidence | Final release gate |
 |---|---|---|
-| Backend tests | The README records the latest **reported** local run as 53 passed, 0 failed, 0 skipped. The earlier 33-test count in this checklist was stale. | [ ] Run `python -m pytest -q` from the exact final `main` checkout and record the result. Do not rely on either historical count as proof of the final commit. |
-| Frontend build | TypeScript check and Vite production build were previously reported as passing. | [ ] Run `npm run build` from the exact final checkout. |
-| Live Elexon integration | A prior local integration run reported 744/744 hourly matches and 1,488/1,488 half-hour readings on 26 October 2026. This is not proof of current hosted behavior. | [ ] Confirm the same coverage and live-source state through the public API after an idle/cold start. |
-| Docker Compose | Configuration exists; Docker runtime has not been verified in the recorded environment. | [ ] Run the Compose checks below if Docker is available; otherwise keep the README's “not verified” wording. |
-| Single-container Dockerfile | Configuration exists; runtime not verified. | [ ] Build/run the root Dockerfile if Docker is available; otherwise keep “not verified”. |
+| Backend tests | 53 passed, 0 failed, 0 skipped locally using the bundled Python runtime and the existing temporary verification dependencies; one upstream Starlette/AnyIO deprecation warning. GitHub Actions passed on current commit `b25dcb6`. | [x] Recorded local regression result and successful CI run [40350609025](https://github.com/Surya270106/w8k3q2m9/actions/runs/40350609025). Host `python` was unavailable; tests used the bundled Python runtime. |
+| Frontend build | TypeScript and Vite production build passed in GitHub Actions for current commit `b25dcb6`; root Docker build also completed the frontend build. Largest JS chunk 486.73 kB (135.23 kB gzip); no Vite chunk-size advisory. | [x] Build verified in CI and Docker. Host `npm` was unavailable in this shell; npm install emitted the upstream Recharts 2.15.4 deprecation notice. |
+| Live Elexon integration | On 27 October 2026, hosted Vercel and Render analysis responses reported `source=live`, `status=live`, 744/744 hourly matches, 0 missing forecast periods, 0 missing actual periods and 1,488/1,488 half-hour readings. | [x] Point-in-time API source and coverage verified. [ ] Cold-start/idle recheck remains outstanding. |
+| Docker Compose | `docker compose config`, build, runtime, health/readiness, frontend and analysis checks passed locally on 27 October 2026; live source reported 744/744 hourly and 1,488/1,488 half-hour records. Logs showed no startup/proxy errors or unexpected restarts; stack was stopped. | [x] Compose configuration, build and runtime verified. Named data volume was preserved. |
+| Single-container Dockerfile | Root image built and ran locally on 27 October 2026; frontend, health, readiness and analysis returned successfully with live source and complete 744/744 hourly, 1,488/1,488 half-hour coverage. Logs were clean; smoke container was stopped and removed. | [x] Standalone build and runtime verified. |
 | Browser QA | Core controls were exercised in a partial manual pass; CSV contents, keyboard accessibility, responsive layouts, and all error states were not fully checked. | [ ] Check the rendered dashboard, source status, chart, one CSV export, and browser console at minimum. |
 | README/repository access | Public source and README are published. | [ ] Open the repository in a signed-out/private window and ensure the README and Mermaid diagrams render. |
 | Video and form | Not completed as of this checklist revision. | [ ] Record/upload an unlisted video, test its link anonymously, then submit the form. |
 
 ## Anonymous deployment checks
 
-Open each URL in a private/incognito browser window.
+These unauthenticated HTTP endpoint checks were performed directly; they do not represent a visual browser walkthrough. The user separately confirmed private/incognito access to the submitted links.
 
 **Vercel**
-- [ ] [Frontend](https://w8k3q2m9.vercel.app/)
-- [ ] [Health](https://w8k3q2m9.vercel.app/api/health)
-- [ ] [Readiness](https://w8k3q2m9.vercel.app/api/ready)
-- [ ] [January analysis at 09:00 UK cutoff](https://w8k3q2m9.vercel.app/api/analysis?month=2026-01&cutoff=09%3A00)
+- [x] [Frontend](https://w8k3q2m9.vercel.app/) (unauthenticated HTTP 200)
+- [x] [Health](https://w8k3q2m9.vercel.app/api/health) (unauthenticated HTTP 200)
+- [x] [Readiness](https://w8k3q2m9.vercel.app/api/ready) (unauthenticated HTTP 200)
+- [x] [January analysis at 09:00 UK cutoff](https://w8k3q2m9.vercel.app/api/analysis?month=2026-01&cutoff=09%3A00) (HTTP 200; live source and complete sample at check time)
 
 **Render**
-- [ ] [Frontend served by the Render service](https://w8k3q2m9.onrender.com/)
-- [ ] [Health](https://w8k3q2m9.onrender.com/api/health)
-- [ ] [Readiness](https://w8k3q2m9.onrender.com/api/ready)
-- [ ] [January analysis at 09:00 UK cutoff](https://w8k3q2m9.onrender.com/api/analysis?month=2026-01&cutoff=09%3A00)
+- [x] [Frontend served by the Render service](https://w8k3q2m9.onrender.com/) (unauthenticated HTTP 200)
+- [x] [Health](https://w8k3q2m9.onrender.com/api/health) (unauthenticated HTTP 200)
+- [x] [Readiness](https://w8k3q2m9.onrender.com/api/ready) (unauthenticated HTTP 200)
+- [x] [January analysis at 09:00 UK cutoff](https://w8k3q2m9.onrender.com/api/analysis?month=2026-01&cutoff=09%3A00) (HTTP 200; live source and complete sample at check time)
 
 For both analysis endpoints, verify the returned source/status identifies real Elexon observations rather than `demo`/synthetic data; expect 744 hourly periods, 744 matched periods when the source is complete, and 1,488 underlying half-hour readings. Check the dashboard's visible source-state label too. A successful health response only proves the process is alive; it does not prove Elexon is reachable.
 
@@ -80,7 +80,7 @@ docker build -t winddesk:local .
 docker run --rm -p 8000:8000 -e ALLOW_DEMO_FALLBACK=true winddesk:local
 ```
 
-Open `http://localhost:8000` and verify health and analysis. If Docker is not available, leave Docker marked unverified in the README.
+Open `http://localhost:8000` and verify health and analysis. Docker was available and both deployment paths were verified on 27 October 2026; see the verification table above.
 
 ## Final submission gates
 
